@@ -45,6 +45,14 @@ class WordStore:
             if isinstance(data, list):
                 return data
         except Exception:
+            # Corrupted history file; back it up and reset
+            try:
+                bad_path = self.history_path + ".bad"
+                if os.path.exists(bad_path):
+                    os.remove(bad_path)
+                os.rename(self.history_path, bad_path)
+            except Exception:
+                pass
             return []
         return []
 

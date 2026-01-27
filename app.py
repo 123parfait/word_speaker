@@ -16,14 +16,14 @@ def init_style(root):
     style.configure("TButton", padding=(10, 6), background="#f5f6f8", foreground="#222222")
     style.map(
         "TButton",
-        background=[("active", "#eef2ff"), ("pressed", "#dbe7ff")],
+        background=[("active", "#c6d6ff"), ("pressed", "#a9c1ff")],
         foreground=[("active", "#1e3a8a"), ("pressed", "#1e3a8a")],
     )
     # Primary uses the same neutral style; color only on interaction
     style.configure("Primary.TButton", background="#f5f6f8", foreground="#222222")
     style.map(
         "Primary.TButton",
-        background=[("active", "#eef2ff"), ("pressed", "#dbe7ff")],
+        background=[("active", "#c6d6ff"), ("pressed", "#a9c1ff")],
         foreground=[("active", "#1e3a8a"), ("pressed", "#1e3a8a")],
     )
     style.configure(
@@ -34,9 +34,10 @@ def init_style(root):
     )
     style.map(
         "CardButton.TButton",
-        background=[("active", "#eef2ff"), ("pressed", "#dbe7ff")],
+        background=[("active", "#c6d6ff"), ("pressed", "#a9c1ff")],
         foreground=[("active", "#1e3a8a"), ("pressed", "#1e3a8a")],
     )
+    style.configure("Icon.TButton", padding=(6, 4), background="#f5f6f8", foreground="#222222")
     style.configure("Speed.TButton", padding=(8, 4), background="#f5f6f8", foreground="#374151")
     style.configure(
         "SelectedSpeed.TButton",
