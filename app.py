@@ -37,16 +37,12 @@ def init_style(root):
         background=[("active", "#eef2ff"), ("pressed", "#dbe7ff")],
         foreground=[("active", "#1e3a8a"), ("pressed", "#1e3a8a")],
     )
+    style.configure("Speed.TButton", padding=(8, 4), background="#f5f6f8", foreground="#374151")
     style.configure(
-        "SelectedCardButton.TButton",
-        foreground="#0f172a",
+        "SelectedSpeed.TButton",
+        padding=(8, 4),
         background="#cfe3ff",
-        padding=(18, 12),
-    )
-    style.map(
-        "SelectedCardButton.TButton",
-        background=[("active", "#bfd6ff"), ("pressed", "#b0ccff")],
-        foreground=[("active", "#0f172a"), ("pressed", "#0f172a")],
+        foreground="#1e3a8a",
     )
     style.configure("TCheckbutton", background="#f6f7fb")
     style.configure("TRadiobutton", background="#f6f7fb")
