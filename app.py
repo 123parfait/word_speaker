@@ -1,67 +1,65 @@
 ﻿# -*- coding: utf-8 -*-
 import tkinter as tk
-from tkinter import filedialog, messagebox
-import csv
-import threading
-import pyttsx3
+from tkinter import ttk
 
-# Keep UI responsive by speaking in a background thread
-_speak_lock = threading.Lock()
+from ui.main_view import MainView
 
-def _speak_text(text):
-    try:
-        with _speak_lock:
-            engine = pyttsx3.init(driverName="sapi5")
-            engine.say(text)
-            engine.runAndWait()
-    except Exception as e:
-        messagebox.showerror("Speech Error", f"Error: {e}")
 
-def speak_word():
-    selection = listbox.curselection()
-    if not selection:
-        messagebox.showinfo("Info", "Please select a word first.")
-        return
-    word = listbox.get(selection[0])
-    threading.Thread(target=_speak_text, args=(word,), daemon=True).start()
-
-def load_words():
-    path = filedialog.askopenfilename(
-        title="Choose a word list",
-        filetypes=[("Text files", "*.txt"), ("CSV files", "*.csv")]
+def init_style(root):
+    root.configure(bg="#f6f7fb")
+    style = ttk.Style()
+    style.theme_use("clam")
+    style.configure("TFrame", background="#f6f7fb")
+    style.configure("Card.TFrame", background="#ffffff")
+    style.configure("TLabel", background="#f6f7fb", foreground="#222")
+    style.configure("Card.TLabel", background="#ffffff", foreground="#222")
+    style.configure("TButton", padding=(10, 6), background="#f5f6f8", foreground="#222222")
+    style.map(
+        "TButton",
+        background=[("active", "#eef2ff"), ("pressed", "#dbe7ff")],
+        foreground=[("active", "#1e3a8a"), ("pressed", "#1e3a8a")],
     )
-    if not path:
-        return
+    # Primary uses the same neutral style; color only on interaction
+    style.configure("Primary.TButton", background="#f5f6f8", foreground="#222222")
+    style.map(
+        "Primary.TButton",
+        background=[("active", "#eef2ff"), ("pressed", "#dbe7ff")],
+        foreground=[("active", "#1e3a8a"), ("pressed", "#1e3a8a")],
+    )
+    style.configure(
+        "CardButton.TButton",
+        foreground="#1f2937",
+        background="#f5f6f8",
+        padding=(18, 12),
+    )
+    style.map(
+        "CardButton.TButton",
+        background=[("active", "#eef2ff"), ("pressed", "#dbe7ff")],
+        foreground=[("active", "#1e3a8a"), ("pressed", "#1e3a8a")],
+    )
+    style.configure(
+        "SelectedCardButton.TButton",
+        foreground="#0f172a",
+        background="#cfe3ff",
+        padding=(18, 12),
+    )
+    style.map(
+        "SelectedCardButton.TButton",
+        background=[("active", "#bfd6ff"), ("pressed", "#b0ccff")],
+        foreground=[("active", "#0f172a"), ("pressed", "#0f172a")],
+    )
+    style.configure("TCheckbutton", background="#f6f7fb")
+    style.configure("TRadiobutton", background="#f6f7fb")
 
-    listbox.delete(0, tk.END)
 
-    if path.endswith(".txt"):
-        with open(path, "r", encoding="utf-8") as f:
-            for line in f:
-                word = line.strip()
-                if word:
-                    listbox.insert(tk.END, word)
+def main():
+    root = tk.Tk()
+    root.title("Word Speaker")
+    init_style(root)
 
-    elif path.endswith(".csv"):
-        with open(path, "r", encoding="utf-8") as f:
-            reader = csv.reader(f)
-            for row in reader:
-                if row:
-                    listbox.insert(tk.END, row[0].strip())
+    MainView(root).pack(padx=20, pady=20)
+    root.mainloop()
 
-root = tk.Tk()
-root.title("Word Speaker")
 
-btn_frame = tk.Frame(root)
-btn_frame.pack(pady=8)
-
-btn_load = tk.Button(btn_frame, text="Import", command=load_words)
-btn_load.pack(side=tk.LEFT, padx=5)
-
-btn_speak = tk.Button(btn_frame, text="Speak", command=speak_word)
-btn_speak.pack(side=tk.LEFT, padx=5)
-
-listbox = tk.Listbox(root, width=40, height=15)
-listbox.pack(padx=10, pady=10)
-
-root.mainloop()
+if __name__ == "__main__":
+    main()
