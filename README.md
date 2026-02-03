@@ -11,7 +11,7 @@ A tiny Windows desktop app to import a word list (txt/csv) and listen to pronunc
 ## Run (CMD)
 
 `at
-cd /d D:\l'amour\speaker
+cd /d path\to\word_speaker
 pip install -r requirements.txt
 python app.py
 `
@@ -19,7 +19,7 @@ python app.py
 If your system uses py to run Python:
 
 `at
-cd /d D:\l'amour\speaker
+cd /d path\to\word_speaker
 py -3 -m pip install -r requirements.txt
 py -3 app.py
 `
