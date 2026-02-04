@@ -3,6 +3,8 @@ import threading
 import pyttsx3
 from tkinter import messagebox
 
+from services.voice_manager import select_voice
+
 _lock = threading.Lock()
 _current_engine = None
 _token = 0
@@ -32,6 +34,7 @@ def speak_async(text, volume=1.0, cancel_before=False):
                 if my_token != _token:
                     return
                 engine = pyttsx3.init(driverName="sapi5")
+                select_voice(engine)
                 _current_engine = engine
                 engine.setProperty("volume", max(0.0, min(1.0, volume)))
                 engine.say(text)
