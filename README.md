@@ -1,12 +1,13 @@
 # Word Speaker
 
-A tiny Windows desktop app to import a word list (txt/csv) and listen to pronunciation.
+A tiny Windows desktop app to import a word list (txt/csv) and listen to pronunciation. Fully offline for easy self-study and dictation practice.
 
 ## Features
 - Import .txt/.csv word lists
 - Play in order or random (no repeat)
 - Dictation check mode
 - Offline speech via pyttsx3 (Windows SAPI5). No network required.
+- Switch to Windows built-in voice packages from Settings > Source.
 
 ## Run (CMD)
 

@@ -6,6 +6,14 @@ from tkinter import ttk, filedialog, messagebox
 
 from data.store import WordStore
 from services.tts import speak_async, cancel_all as tts_cancel_all
+from services.voice_catalog import list_system_voices
+from services.voice_manager import (
+    SOURCE_PYTTSX3,
+    SOURCE_SYSTEM,
+    get_voice_id,
+    get_voice_source,
+    set_voice_source,
+)
 from services.diff_view import apply_diff
 
 
@@ -79,6 +87,9 @@ class MainView(ttk.Frame):
         self.hist_btn_toggle_check = None
         self.check_controls = None
         self.hide_words_btn = None
+        self.voice_var = tk.StringVar(value="")
+        self.voice_combo = None
+        self.voice_map = {}
 
         self.build_ui()
         self.refresh_history()
@@ -443,7 +454,7 @@ class MainView(ttk.Frame):
         right_panel.grid(row=0, column=1, padx=(10, 0), sticky="n")
         right_panel.grid_propagate(False)
 
-        self.settings_sections_visible = {"order": True, "speed": False, "volume": False}
+        self.settings_sections_visible = {"source": True, "order": True, "speed": False, "volume": False}
         sections = []
 
         def rebuild_sections():
@@ -477,9 +488,31 @@ class MainView(ttk.Frame):
             rebuild_sections()
 
         # Left menu
-        for label, key in [("Order", "order"), ("Speed", "speed"), ("Volume", "volume")]:
+        for label, key in [("Source", "source"), ("Order", "order"), ("Speed", "speed"), ("Volume", "volume")]:
             btn = ttk.Button(left_menu, text=label, command=lambda k=key: toggle_section(k))
             btn.pack(fill=tk.X, pady=4)
+
+        # Source section
+        source_section = ttk.Frame(right_panel, style="Card.TFrame")
+        ttk.Label(source_section, text="Source", style="Card.TLabel").pack(anchor="w")
+        ttk.Label(
+            source_section,
+            text="Choose a system voice or keep the default pyttsx3 voice.",
+            style="Card.TLabel",
+            foreground="#666",
+        ).pack(anchor="w", pady=(0, 4))
+
+        self.voice_combo = ttk.Combobox(
+            source_section,
+            textvariable=self.voice_var,
+            state="readonly",
+            width=32,
+        )
+        self.voice_combo.pack(anchor="w")
+        self.voice_combo.bind("<<ComboboxSelected>>", self.on_voice_change)
+
+        source_sep = ttk.Separator(right_panel, orient="horizontal")
+        sections.append({"key": "source", "frame": source_section, "sep": source_sep})
 
         # Order section
         order_section = ttk.Frame(right_panel, style="Card.TFrame")
@@ -569,6 +602,7 @@ class MainView(ttk.Frame):
         self.update_loop_button()
         self.update_speed_buttons()
         self.on_volume_change()
+        self.refresh_voice_list()
 
     def apply_custom_interval(self):
         try:
@@ -772,6 +806,58 @@ class MainView(ttk.Frame):
             self.status_label.grid()
             self.hide_words_btn.config(text="Hide Word List")
         self.update_right_visibility()
+
+    # Voice source
+    def refresh_voice_list(self):
+        voices = list_system_voices()
+        self.voice_map = {}
+        options = []
+
+        default_label = "pyttsx3 (Default)"
+        self.voice_map[default_label] = (SOURCE_PYTTSX3, None, None)
+        options.append(default_label)
+
+        for v in voices:
+            name = v.get("name") or v.get("id") or "Unknown"
+            langs = v.get("languages") or []
+            lang_parts = []
+            for lang in langs:
+                if isinstance(lang, bytes):
+                    try:
+                        lang = lang.decode(errors="ignore")
+                    except Exception:
+                        lang = ""
+                lang = str(lang).strip()
+                if lang:
+                    lang_parts.append(lang)
+            lang_text = ",".join(lang_parts)
+            label = f"{name} ({lang_text})" if lang_text else name
+            if label not in self.voice_map:
+                self.voice_map[label] = (SOURCE_SYSTEM, v.get("id"), name)
+                options.append(label)
+
+        if self.voice_combo:
+            self.voice_combo["values"] = options
+
+        # restore current selection
+        current_source = get_voice_source()
+        current_id = get_voice_id()
+        selected = default_label
+        if current_source == SOURCE_SYSTEM and current_id:
+            for label, data in self.voice_map.items():
+                if data[0] == SOURCE_SYSTEM and data[1] == current_id:
+                    selected = label
+                    break
+        self.voice_var.set(selected)
+
+    def on_voice_change(self, _event=None):
+        label = self.voice_var.get()
+        data = self.voice_map.get(label)
+        if not data:
+            set_voice_source(SOURCE_PYTTSX3, None, None)
+            return
+        source, voice_id, voice_label = data
+        set_voice_source(source, voice_id, voice_label)
 
     # Input check
     def on_check_enter(self, _event=None):
