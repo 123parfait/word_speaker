@@ -9,6 +9,7 @@ class WordStore:
     def __init__(self):
         self.words = []
         self.history_path = os.path.join(os.path.dirname(__file__), "history.json")
+        self.stats_path = os.path.join(os.path.dirname(__file__), "word_stats.json")
 
     def clear(self):
         self.words = []
@@ -34,6 +35,17 @@ class WordStore:
                             words.append(word)
         self.words = words
         self.add_history(path)
+
+        # Update word statistics, such as apple: 1, banana: 2
+        # FIXME add word split to handle a phrase
+        stats = self.load_stats()
+        for word in words:
+            if word in stats:
+                stats[word] += 1
+            else:
+                stats[word] = 1
+        self.save_stats(stats)
+
         return words
 
     def load_history(self):
@@ -55,6 +67,25 @@ class WordStore:
                 pass
             return []
         return []
+
+    def load_stats(self)->dict[str, int]:
+        if not os.path.exists(self.stats_path):
+            return {}
+        try:
+            with open(self.stats_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+        return {}
+
+    def save_stats(self, stats: dict[str, int]):
+        try:
+            with open(self.stats_path, "w", encoding="utf-8") as f:
+                json.dump(stats, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
 
     def add_history(self, path):
         history = self.load_history()
