@@ -28,3 +28,7 @@ py -3 app.py
 ## Input format
 - .txt: one word per line
 - .csv: use first column as word
+
+## Output file
+- history.json, which saves the file source
+- word_stats.json, the statistic of word frequency

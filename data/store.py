@@ -36,17 +36,30 @@ class WordStore:
         self.words = words
         self.add_history(path)
 
-        # Update word statistics, such as apple: 1, banana: 2
-        # FIXME add word split to handle a phrase
+        # Update word statistics, split sentences into words for counting
         stats = self.load_stats()
-        for word in words:
-            if word in stats:
-                stats[word] += 1
-            else:
-                stats[word] = 1
+        for sentence in words:
+            # Split each sentence into words for statistics
+            sentence_words = self._split_into_words(sentence)
+            for word in sentence_words:
+                if word in stats:
+                    stats[word] += 1
+                else:
+                    stats[word] = 1
         self.save_stats(stats)
 
         return words
+    
+    def _split_into_words(self, text):
+        """
+        Split text into individual words, handling multiple delimiters and removing punctuation
+        """
+        import re
+        # Split on whitespace, commas, semicolons, and other common delimiters
+        # Also remove punctuation and convert to lowercase
+        words = re.findall(r'\b\w+\b', text.lower())
+        # Filter out empty words
+        return [word.strip() for word in words if word.strip()]
 
     def load_history(self):
         if not os.path.exists(self.history_path):
