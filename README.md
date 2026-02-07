@@ -8,6 +8,7 @@ A tiny Windows desktop app to import a word list (txt/csv) and listen to pronunc
 - Dictation check mode
 - Offline speech via pyttsx3 (Windows SAPI5). No network required.
 - Switch to Windows built-in voice packages from Settings > Source.
+- Word frequency statistics and related ranking
 
 ## Run (CMD)
 

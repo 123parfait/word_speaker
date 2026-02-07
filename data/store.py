@@ -117,3 +117,24 @@ class WordStore:
             pass
 
         return history
+
+    def _sort_stats(self)->dict[int, dict[str, int]]:
+        """
+        rank the word frequency to show the unfamiliar words
+        :return: a dict, key:value = ranking:word_statistics
+        """
+        stats = self.load_stats()
+        stats_list = []
+        for word, freq in stats.items(): stats_list.append((word, freq))
+        # do a bubble sort with descending order
+        stats_length = len(stats_list)
+        order_flag = True
+        for i in range(0, stats_length - 1):
+            if i > 0 and order_flag == True: break
+            for j in range(0, stats_length - i - 1):
+                if stats_list[j][1] < stats_list[j + 1][1]:
+                    stats_list[j], stats_list[j + 1] = stats_list[j + 1], stats_list[j]
+                    order_flag = False
+        result = {}
+        for i in range(0, stats_length): result[i + 1] = stats_list[i]
+        return result
