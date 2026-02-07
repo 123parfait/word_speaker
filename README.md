@@ -8,6 +8,7 @@ A tiny Windows desktop app to import a word list (txt/csv) and listen to pronunc
 - Dictation check mode
 - Offline speech via pyttsx3 (Windows SAPI5). No network required.
 - Switch to Windows built-in voice packages from Settings > Source.
+- Word frequency statistics and related ranking
 
 ## Run (CMD)
 
@@ -28,3 +29,7 @@ py -3 app.py
 ## Input format
 - .txt: one word per line
 - .csv: use first column as word
+
+## Output file
+- history.json, which saves the file source
+- word_stats.json, the statistic of word frequency
