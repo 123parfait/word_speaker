@@ -39,3 +39,7 @@ When the app opens, paste your own Gemini API key into the popup window and clic
 ## Input format
 - .txt: one word per line
 - .csv: use first column as word
+
+## Credits
+- TTS is powered by [thewh1teagle/kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx)
+- English -> Chinese translation is powered by [argosopentech/argos-translate](https://github.com/argosopentech/argos-translate)
