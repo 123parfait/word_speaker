@@ -3,4 +3,4 @@ banana
 computer
 language
 pronunciation
-i am a robort
+i am a robot

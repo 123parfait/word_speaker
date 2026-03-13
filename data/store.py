@@ -8,14 +8,17 @@ from datetime import datetime
 class WordStore:
     def __init__(self):
         self.words = []
+        self.current_source_path = None
         self.history_path = os.path.join(os.path.dirname(__file__), "history.json")
         self.stats_path = os.path.join(os.path.dirname(__file__), "word_stats.json")
 
     def clear(self):
         self.words = []
+        self.current_source_path = None
 
     def set_words(self, words):
         self.words = list(words)
+        self.current_source_path = None
 
     def load_from_file(self, path):
         words = []
@@ -34,6 +37,7 @@ class WordStore:
                         if word:
                             words.append(word)
         self.words = words
+        self.current_source_path = os.path.abspath(path)
         self.add_history(path)
 
         # Update word statistics, such as apple: 1, banana: 2
@@ -47,6 +51,41 @@ class WordStore:
         self.save_stats(stats)
 
         return words
+
+    def get_current_source_path(self):
+        return self.current_source_path
+
+    def has_current_source_file(self):
+        return bool(self.current_source_path and os.path.exists(self.current_source_path))
+
+    def save_to_current_file(self):
+        if not self.current_source_path:
+            return False
+        return self.save_to_file(self.current_source_path)
+
+    def save_to_file(self, path):
+        target = os.path.abspath(str(path or "").strip())
+        if not target:
+            return False
+
+        if target.lower().endswith(".txt"):
+            with open(target, "w", encoding="utf-8", newline="") as f:
+                for word in self.words:
+                    value = str(word or "").strip()
+                    if value:
+                        f.write(value + "\n")
+        elif target.lower().endswith(".csv"):
+            with open(target, "w", encoding="utf-8", newline="") as f:
+                writer = csv.writer(f)
+                for word in self.words:
+                    value = str(word or "").strip()
+                    if value:
+                        writer.writerow([value])
+        else:
+            raise ValueError("Unsupported file type for save.")
+
+        self.current_source_path = target
+        return True
 
     def load_history(self):
         if not os.path.exists(self.history_path):

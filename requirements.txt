@@ -1,1 +1,3 @@
-pyttsx3
+kokoro-onnx
+onnxruntime
+argostranslate

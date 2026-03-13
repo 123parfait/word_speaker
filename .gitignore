@@ -10,3 +10,6 @@ dist/
 build/
 *.spec
 data/history.json
+data/app_config.json
+data/word_stats.json
+data/models/

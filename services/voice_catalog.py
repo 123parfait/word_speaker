@@ -1,37 +1,30 @@
 # -*- coding: utf-8 -*-
-import pyttsx3
 
-
-def _safe_attr(obj, name):
-    value = getattr(obj, name, None)
-    return value if value is not None else ""
+# Kokoro voices focused on English accents.
+_VOICE_PROFILES = [
+    {
+        "id": "af_heart",
+        "name": "English (US)",
+        "languages": ["en-us"],
+    },
+    {
+        "id": "bf_emma",
+        "name": "English (UK)",
+        "languages": ["en-gb"],
+    },
+]
 
 
 def list_system_voices():
-    engine = None
-    try:
-        engine = pyttsx3.init(driverName="sapi5")
-        voices = engine.getProperty("voices") or []
-        result = []
-        for v in voices:
-            voice_id = _safe_attr(v, "id")
-            name = _safe_attr(v, "name")
-            langs = _safe_attr(v, "languages")
-            gender = _safe_attr(v, "gender")
-            result.append(
-                {
-                    "id": voice_id,
-                    "name": name,
-                    "languages": langs,
-                    "gender": gender,
-                }
-            )
-        return result
-    except Exception:
-        return []
-    finally:
-        if engine:
-            try:
-                engine.stop()
-            except Exception:
-                pass
+    # Keep function name for backward compatibility with the current UI call site.
+    return [dict(v) for v in _VOICE_PROFILES]
+
+
+def get_voice_profile(voice_id):
+    for profile in _VOICE_PROFILES:
+        if profile["id"] == voice_id:
+            return dict(profile)
+    for profile in _VOICE_PROFILES:
+        if profile.get("id") == "bf_emma":
+            return dict(profile)
+    return dict(_VOICE_PROFILES[0])
