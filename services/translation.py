@@ -1,10 +1,14 @@
 # -*- coding: utf-8 -*-
+import json
 import threading
+from pathlib import Path
 
 _lock = threading.Lock()
 _translation = None
 _init_error = None
 _prepare_started = False
+_CACHE_PATH = Path(__file__).resolve().parent.parent / "data" / "translation_cache.json"
+_cache_data = None
 
 
 def _find_lang(langs, prefix):
@@ -69,6 +73,61 @@ def _ensure_translation():
         raise
 
 
+def _normalize_cache_key(text):
+    return str(text or "").strip().casefold()
+
+
+def _load_cache_locked():
+    global _cache_data
+    if _cache_data is not None:
+        return _cache_data
+    if not _CACHE_PATH.exists():
+        _cache_data = {}
+        return _cache_data
+    try:
+        with open(_CACHE_PATH, "r", encoding="utf-8") as fp:
+            data = json.load(fp)
+        _cache_data = data if isinstance(data, dict) else {}
+    except Exception:
+        _cache_data = {}
+    return _cache_data
+
+
+def _save_cache_locked():
+    _CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(_CACHE_PATH, "w", encoding="utf-8") as fp:
+        json.dump(_cache_data or {}, fp, ensure_ascii=False, indent=2)
+
+
+def get_cached_translations(words):
+    result = {}
+    with _lock:
+        cache = _load_cache_locked()
+        for word in words:
+            key = _normalize_cache_key(word)
+            if key in cache:
+                result[word] = str(cache.get(key) or "")
+    return result
+
+
+def _update_translation_cache(pairs):
+    changed = False
+    with _lock:
+        cache = _load_cache_locked()
+        for word, zh_text in pairs.items():
+            key = _normalize_cache_key(word)
+            value = str(zh_text or "").strip()
+            if not key or not value:
+                continue
+            if cache.get(key) == value:
+                continue
+            cache[key] = value
+            changed = True
+        if changed:
+            _save_cache_locked()
+    return changed
+
+
 def prepare_async():
     global _prepare_started
     with _lock:
@@ -93,10 +152,27 @@ def translate_text(text):
 
 
 def translate_words(words):
-    result = {}
+    result = get_cached_translations(words)
+    missing = []
+    seen_missing = set()
     for w in words:
+        if w in result:
+            continue
+        key = _normalize_cache_key(w)
+        if not key or key in seen_missing:
+            continue
+        seen_missing.add(key)
+        missing.append(w)
+
+    new_pairs = {}
+    for w in missing:
         try:
-            result[w] = translate_text(w)
+            translated = translate_text(w)
         except Exception:
-            result[w] = ""
+            translated = ""
+        result[w] = translated
+        if translated:
+            new_pairs[w] = translated
+    if new_pairs:
+        _update_translation_cache(new_pairs)
     return result

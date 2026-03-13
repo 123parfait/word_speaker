@@ -1,3 +1,7 @@
 kokoro-onnx
 onnxruntime
 argostranslate
+spacy
+spacy-lookups-data
+python-docx
+pymupdf

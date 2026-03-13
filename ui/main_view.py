@@ -14,7 +14,7 @@ from services.tts import (
     prepare_async as tts_prepare_async,
 )
 from services.translation import (
-    prepare_async as translation_prepare_async,
+    get_cached_translations,
     translate_words as translate_words_en_zh,
 )
 from services.ielts_passage import build_ielts_listening_passage
@@ -38,6 +38,13 @@ from services.voice_manager import (
     get_voice_id,
     get_voice_source,
     set_voice_source,
+)
+from services.corpus_search import (
+    corpus_stats,
+    get_nlp_status,
+    import_corpus_files,
+    list_documents as list_corpus_documents,
+    search_corpus,
 )
 from services.diff_view import apply_diff
 
@@ -115,8 +122,11 @@ class MainView(ttk.Frame):
         self.check_btn_toggle_check = None
         self.hist_btn_toggle_check = None
         self.passage_btn_check = None
+        self.find_btn = None
+        self.find_btn_check = None
         self.check_controls = None
         self.hide_words_btn = None
+        self.main = None
         self.voice_var = tk.StringVar(value="")
         self.voice_combo = None
         self.voice_map = {}
@@ -125,10 +135,15 @@ class MainView(ttk.Frame):
         self.word_context_menu = None
         self.word_edit_entry = None
         self.word_edit_row = None
+        self.word_edit_column = None
         self.suppress_word_select_action = False
         self.sentence_window = None
         self.manual_words_window = None
-        self.manual_words_text = None
+        self.manual_words_table = None
+        self.manual_words_table_scroll = None
+        self.manual_preview_edit_entry = None
+        self.manual_preview_edit_item = None
+        self.manual_preview_edit_column = None
         self.sentence_generation_token = 0
         self.sentence_generation_active_token = 0
         self.sentence_event_queue = queue.Queue()
@@ -159,6 +174,18 @@ class MainView(ttk.Frame):
         self.passage_generation_token = 0
         self.passage_generation_active_token = 0
         self.passage_event_queue = queue.Queue()
+        self.find_window = None
+        self.find_search_var = tk.StringVar(value="")
+        self.find_limit_var = tk.StringVar(value="20")
+        self.find_status_var = tk.StringVar(value="Import docs, then search by word or phrase.")
+        self.find_results_table = None
+        self.find_preview_text = None
+        self.find_docs_list = None
+        self.find_doc_items = []
+        self.find_result_items = {}
+        self.find_task_queue = queue.Queue()
+        self.find_task_token = 0
+        self.find_active_token = 0
 
         self.build_ui()
         self.refresh_history()
@@ -170,7 +197,6 @@ class MainView(ttk.Frame):
         self.update_play_button()
         self.update_right_visibility()
         tts_prepare_async()
-        translation_prepare_async()
         self.refresh_gemini_models()
         self.after(150, self.ensure_gemini_api_key)
 
@@ -182,15 +208,18 @@ class MainView(ttk.Frame):
 
         ttk.Separator(self, orient="horizontal").pack(fill=tk.X, pady=(0, 10))
 
-        main = ttk.Frame(self)
-        main.pack()
+        self.main = ttk.Frame(self)
+        self.main.pack(fill="both", expand=True)
+        self.main.grid_columnconfigure(0, weight=5)
+        self.main.grid_columnconfigure(2, weight=3)
+        self.main.grid_rowconfigure(0, weight=1)
 
-        self.left = ttk.Frame(main, style="Card.TFrame")
-        self.left.grid(row=0, column=0, sticky="n")
-        self.mid_sep = ttk.Separator(main, orient="vertical")
+        self.left = ttk.Frame(self.main, style="Card.TFrame")
+        self.left.grid(row=0, column=0, sticky="nsew")
+        self.mid_sep = ttk.Separator(self.main, orient="vertical")
         self.mid_sep.grid(row=0, column=1, sticky="ns", padx=10)
-        self.right = ttk.Frame(main, style="Card.TFrame")
-        self.right.grid(row=0, column=2, sticky="n")
+        self.right = ttk.Frame(self.main, style="Card.TFrame")
+        self.right.grid(row=0, column=2, sticky="nsew")
 
         # Left: Word list + player bar
         left_title = ttk.Label(self.left, text="Word List", style="Card.TLabel")
@@ -201,6 +230,7 @@ class MainView(ttk.Frame):
         top_btn_row.grid_columnconfigure(0, weight=1)
         top_btn_row.grid_columnconfigure(1, weight=1)
         top_btn_row.grid_columnconfigure(2, weight=1)
+        top_btn_row.grid_columnconfigure(3, weight=1)
 
         btn_load = ttk.Button(top_btn_row, text="⭳", style="Primary.TButton", command=self.load_words)
         btn_load.grid(row=0, column=0, padx=(0, 6), sticky="ew")
@@ -208,11 +238,15 @@ class MainView(ttk.Frame):
 
         btn_manual = ttk.Button(top_btn_row, text="✍", command=self.open_manual_words_window)
         btn_manual.grid(row=0, column=1, padx=3, sticky="ew")
-        Tooltip(btn_manual, "Type/Paste Words")
+        Tooltip(btn_manual, "Type/Paste words or a two-column table")
 
         btn_speak = ttk.Button(top_btn_row, text="🔊", command=self.speak_selected)
-        btn_speak.grid(row=0, column=2, padx=(6, 0), sticky="ew")
+        btn_speak.grid(row=0, column=2, padx=3, sticky="ew")
         Tooltip(btn_speak, "Speak Selected")
+
+        btn_find = ttk.Button(top_btn_row, text="🔎", command=self.open_find_window)
+        btn_find.grid(row=0, column=3, padx=(6, 0), sticky="ew")
+        Tooltip(btn_find, "Find Corpus Sentences")
 
         table_wrap = ttk.Frame(self.left, style="Card.TFrame")
         table_wrap.grid(row=2, column=0, columnspan=2, padx=12, pady=(4, 6), sticky="nsew")
@@ -222,15 +256,17 @@ class MainView(ttk.Frame):
 
         self.word_table = ttk.Treeview(
             table_wrap,
-            columns=("en", "zh"),
+            columns=("en", "note", "zh"),
             show="headings",
             height=18,
             selectmode="extended",
         )
         self.word_table.heading("en", text="English")
+        self.word_table.heading("note", text="Notes")
         self.word_table.heading("zh", text="中文")
-        self.word_table.column("en", width=170, anchor="w")
-        self.word_table.column("zh", width=170, anchor="w")
+        self.word_table.column("en", width=260, anchor="w")
+        self.word_table.column("note", width=320, anchor="w")
+        self.word_table.column("zh", width=240, anchor="w")
 
         self.word_table_scroll = ttk.Scrollbar(table_wrap, orient="vertical", command=self.word_table.yview)
         self.word_table.configure(yscrollcommand=self.word_table_scroll.set)
@@ -248,6 +284,7 @@ class MainView(ttk.Frame):
 
         self.word_context_menu = tk.Menu(self, tearoff=0)
         self.word_context_menu.add_command(label="编辑", command=self.start_edit_selected_word)
+        self.word_context_menu.add_command(label="Find", command=self.search_selected_word_in_corpus)
         self.word_context_menu.add_command(label="造句", command=self.make_sentence_for_selected_word)
 
         self.empty_label = ttk.Label(
@@ -265,6 +302,7 @@ class MainView(ttk.Frame):
         self.player_frame.grid_columnconfigure(2, weight=1)
         self.player_frame.grid_columnconfigure(3, weight=1)
         self.player_frame.grid_columnconfigure(4, weight=1)
+        self.player_frame.grid_columnconfigure(5, weight=1)
 
         self.play_btn = ttk.Button(
             self.player_frame, text="▶", style="Icon.TButton", width=4, command=self.toggle_play
@@ -295,6 +333,12 @@ class MainView(ttk.Frame):
         )
         self.passage_btn.grid(row=0, column=4, padx=4, sticky="ew")
         Tooltip(self.passage_btn, "Generate IELTS Passage")
+
+        self.find_btn = ttk.Button(
+            self.player_frame, text="🔎", style="Icon.TButton", width=4, command=self.open_find_window
+        )
+        self.find_btn.grid(row=0, column=5, padx=4, sticky="ew")
+        Tooltip(self.find_btn, "Find Corpus Sentences")
 
         self.status_label = ttk.Label(
             self.left, textvariable=self.status_var, style="Card.TLabel", foreground="#444"
@@ -346,6 +390,12 @@ class MainView(ttk.Frame):
         )
         self.passage_btn_check.pack(side=tk.LEFT, padx=3)
         Tooltip(self.passage_btn_check, "Generate IELTS Passage")
+
+        self.find_btn_check = ttk.Button(
+            self.check_controls, text="🔎", style="Icon.TButton", width=4, command=self.open_find_window
+        )
+        self.find_btn_check.pack(side=tk.LEFT, padx=3)
+        Tooltip(self.find_btn_check, "Find Corpus Sentences")
 
         check_title = ttk.Label(self.check_panel, text="Dictation Check", style="Card.TLabel")
         check_title.grid(row=1, column=0, columnspan=2, padx=10, pady=(4, 4), sticky="w")
@@ -430,23 +480,200 @@ class MainView(ttk.Frame):
         self.reset_playback_state()
         self.status_var.set(f"Loaded {len(words)} words from file.")
 
-    def _parse_manual_words(self, raw_text):
+    def _parse_manual_rows(self, raw_text):
         text = str(raw_text or "")
         lines = text.splitlines()
-        words = []
+        rows = []
+        pending_word = None
+        pending_note_lines = []
         for line in lines:
             line = line.strip()
             if not line:
                 continue
-            parts = re.split(r"[,\t;；，]+", line)
-            if len(parts) <= 1:
-                words.append(line)
+            if "\t" in line:
+                if pending_word:
+                    rows.append({"word": pending_word, "note": " | ".join(pending_note_lines).strip()})
+                    pending_word = None
+                    pending_note_lines = []
+                parts = [part.strip() for part in line.split("\t")]
+                word = str(parts[0] or "").strip()
+                note = " | ".join(part for part in parts[1:] if str(part).strip())
+                if word:
+                    rows.append({"word": word, "note": note})
                 continue
-            for part in parts:
-                token = part.strip()
-                if token:
-                    words.append(token)
-        return words
+            if self._looks_like_word_line(line):
+                if pending_word:
+                    rows.append({"word": pending_word, "note": " | ".join(pending_note_lines).strip()})
+                pending_word = line
+                pending_note_lines = []
+                continue
+
+            if pending_word:
+                pending_note_lines.append(line)
+            else:
+                parts = re.split(r"[,;；，]+", line)
+                if len(parts) > 1 and all(str(part or "").strip() for part in parts):
+                    for part in parts:
+                        token = str(part or "").strip()
+                        if token:
+                            rows.append({"word": token, "note": ""})
+                else:
+                    rows.append({"word": line, "note": ""})
+
+        if pending_word:
+            rows.append({"word": pending_word, "note": " | ".join(pending_note_lines).strip()})
+        return rows
+
+    def _looks_like_word_line(self, text):
+        value = str(text or "").strip()
+        if not value:
+            return False
+        if re.search(r"[\u4e00-\u9fff]", value):
+            return False
+        letters = len(re.findall(r"[A-Za-z]", value))
+        if letters <= 0:
+            return False
+        cjk_count = len(re.findall(r"[\u4e00-\u9fff]", value))
+        return cjk_count == 0 and letters >= max(1, len(value) // 4)
+
+    def _append_manual_preview_rows(self, rows, replace=False):
+        if not self.manual_words_table:
+            return
+        if replace:
+            self.manual_words_table.delete(*self.manual_words_table.get_children())
+        start = len(self.manual_words_table.get_children())
+        for offset, row in enumerate(rows):
+            word = str(row.get("word") or "").strip()
+            note = str(row.get("note") or "").strip()
+            if not word:
+                continue
+            self.manual_words_table.insert("", tk.END, iid=f"manual_{start + offset}", values=(word, note))
+
+    def _collect_manual_rows_from_table(self):
+        rows = []
+        if not self.manual_words_table:
+            return rows
+        for item_id in self.manual_words_table.get_children():
+            values = list(self.manual_words_table.item(item_id, "values") or [])
+            word = str(values[0] if len(values) > 0 else "").strip()
+            note = str(values[1] if len(values) > 1 else "").strip()
+            if not word:
+                continue
+            rows.append({"word": word, "note": note})
+        return rows
+
+    def _clear_manual_preview(self):
+        self._cancel_manual_preview_edit()
+        if self.manual_words_table:
+            self.manual_words_table.delete(*self.manual_words_table.get_children())
+
+    def _close_manual_words_window(self):
+        self._cancel_manual_preview_edit()
+        if self.manual_words_window and self.manual_words_window.winfo_exists():
+            self.manual_words_window.destroy()
+        self.manual_words_window = None
+        self.manual_words_table = None
+        self.manual_words_table_scroll = None
+
+    def _cancel_manual_preview_edit(self, _event=None):
+        if self.manual_preview_edit_entry and self.manual_preview_edit_entry.winfo_exists():
+            self.manual_preview_edit_entry.destroy()
+        self.manual_preview_edit_entry = None
+        self.manual_preview_edit_item = None
+        self.manual_preview_edit_column = None
+        return "break"
+
+    def _finish_manual_preview_edit(self, _event=None):
+        if not self.manual_preview_edit_entry or not self.manual_words_table:
+            return "break"
+        item_id = self.manual_preview_edit_item
+        column_id = self.manual_preview_edit_column
+        new_value = re.sub(r"\s+", " ", str(self.manual_preview_edit_entry.get() or "").strip())
+        self._cancel_manual_preview_edit()
+        if not item_id or not self.manual_words_table.exists(item_id):
+            return "break"
+        values = list(self.manual_words_table.item(item_id, "values") or ["", ""])
+        while len(values) < 2:
+            values.append("")
+        if column_id == "#1" and not new_value:
+            return "break"
+        if column_id == "#1":
+            values[0] = new_value
+        elif column_id == "#2":
+            values[1] = new_value
+        self.manual_words_table.item(item_id, values=values)
+        return "break"
+
+    def _start_manual_preview_edit(self, event=None, item_id=None, column_id=None):
+        if not self.manual_words_table:
+            return "break"
+        target_item = item_id
+        target_column = column_id or "#1"
+        if event is not None:
+            target_item = self.manual_words_table.identify_row(event.y)
+            target_column = self.manual_words_table.identify_column(event.x)
+        if not target_item:
+            target_item = str(self.manual_words_table.focus() or "").strip()
+        if not target_item:
+            selection = self.manual_words_table.selection()
+            if selection:
+                target_item = selection[0]
+        if target_column not in ("#1", "#2"):
+            target_column = "#1"
+        if not target_item or not self.manual_words_table.exists(target_item):
+            return "break"
+        self._cancel_manual_preview_edit()
+        bbox = self.manual_words_table.bbox(target_item, target_column)
+        if not bbox:
+            return "break"
+        x, y, width, height = bbox
+        values = list(self.manual_words_table.item(target_item, "values") or ["", ""])
+        while len(values) < 2:
+            values.append("")
+        current_value = values[0] if target_column == "#1" else values[1]
+        entry = ttk.Entry(self.manual_words_table)
+        entry.insert(0, current_value)
+        entry.select_range(0, tk.END)
+        entry.focus_set()
+        entry.place(x=x, y=y, width=width, height=height)
+        entry.bind("<Return>", self._finish_manual_preview_edit)
+        entry.bind("<Escape>", self._cancel_manual_preview_edit)
+        entry.bind("<FocusOut>", self._finish_manual_preview_edit)
+        self.manual_preview_edit_entry = entry
+        self.manual_preview_edit_item = target_item
+        self.manual_preview_edit_column = target_column
+        return "break"
+
+    def _add_manual_preview_row(self):
+        if not self.manual_words_table:
+            return
+        item_id = f"manual_{len(self.manual_words_table.get_children())}"
+        self.manual_words_table.insert("", tk.END, iid=item_id, values=("", ""))
+        self.manual_words_table.selection_set(item_id)
+        self.manual_words_table.focus(item_id)
+        self._start_manual_preview_edit(item_id=item_id, column_id="#1")
+
+    def _delete_selected_manual_preview_rows(self):
+        if not self.manual_words_table:
+            return
+        selected = list(self.manual_words_table.selection())
+        if not selected:
+            return
+        self._cancel_manual_preview_edit()
+        for item_id in selected:
+            if self.manual_words_table.exists(item_id):
+                self.manual_words_table.delete(item_id)
+
+    def on_manual_preview_paste(self, _event=None):
+        try:
+            raw = self.clipboard_get()
+        except Exception:
+            return "break"
+        rows = self._parse_manual_rows(raw)
+        if not rows:
+            return "break"
+        self._append_manual_preview_rows(rows, replace=False)
+        return "break"
 
     def _update_word_stats_from_manual_input(self, words):
         try:
@@ -457,38 +684,49 @@ class MainView(ttk.Frame):
         except Exception:
             return
 
-    def _apply_manual_words(self, words, mode="replace"):
-        normalized = [str(w).strip() for w in words if str(w).strip()]
-        if not normalized:
+    def _apply_manual_words(self, rows, mode="replace"):
+        normalized_words = []
+        normalized_notes = []
+        for row in rows:
+            if isinstance(row, dict):
+                word = str(row.get("word") or "").strip()
+                note = re.sub(r"\s+", " ", str(row.get("note") or "").strip())
+            else:
+                word = str(row or "").strip()
+                note = ""
+            if not word:
+                continue
+            normalized_words.append(word)
+            normalized_notes.append(note)
+        if not normalized_words:
             messagebox.showinfo("Info", "No valid words found.")
             return False
         self.cancel_word_edit()
 
         if mode == "append":
-            merged = list(self.store.words) + normalized
-            self.store.set_words(merged)
-            self.render_words(merged)
-            self._update_word_stats_from_manual_input(normalized)
-            status_text = f"Appended {len(normalized)} words."
+            merged_words = list(self.store.words) + normalized_words
+            merged_notes = list(self.store.notes) + normalized_notes
+            self.store.set_words(merged_words, merged_notes)
+            self.render_words(merged_words)
+            self._update_word_stats_from_manual_input(normalized_words)
+            status_text = f"Appended {len(normalized_words)} words."
         else:
-            self.store.set_words(normalized)
-            self.render_words(normalized)
-            self._update_word_stats_from_manual_input(normalized)
-            status_text = f"Loaded {len(normalized)} words."
+            self.store.set_words(normalized_words, normalized_notes)
+            self.render_words(normalized_words)
+            self._update_word_stats_from_manual_input(normalized_words)
+            status_text = f"Loaded {len(normalized_words)} words."
         self.reset_playback_state()
         self.status_var.set(status_text)
         return True
 
     def _apply_manual_words_from_editor(self, mode):
-        if not self.manual_words_text:
+        rows = self._collect_manual_rows_from_table()
+        if not rows:
+            messagebox.showinfo("Info", "No valid words found.")
             return
-        raw = self.manual_words_text.get("1.0", tk.END)
-        words = self._parse_manual_words(raw)
-        ok = self._apply_manual_words(words, mode=mode)
-        if ok and self.manual_words_window and self.manual_words_window.winfo_exists():
-            self.manual_words_window.destroy()
-            self.manual_words_window = None
-            self.manual_words_text = None
+        ok = self._apply_manual_words(rows, mode=mode)
+        if ok:
+            self._close_manual_words_window()
 
     def open_manual_words_window(self):
         if self.manual_words_window and self.manual_words_window.winfo_exists():
@@ -502,34 +740,73 @@ class MainView(ttk.Frame):
 
         wrap = ttk.Frame(self.manual_words_window, style="Card.TFrame")
         wrap.pack(fill="both", expand=True, padx=10, pady=10)
-        ttk.Label(wrap, text="Type or paste words", style="Card.TLabel").pack(anchor="w")
+        ttk.Label(wrap, text="Paste into preview table", style="Card.TLabel").pack(anchor="w")
         ttk.Label(
             wrap,
-            text="One per line, or split by comma/semicolon/tab.",
+            text="Paste a two-column table from Google Docs/Sheets. Column 1 = English, Column 2 = Notes.",
             style="Card.TLabel",
             foreground="#666",
         ).pack(anchor="w", pady=(0, 6))
 
-        self.manual_words_text = tk.Text(
-            wrap,
-            wrap="word",
-            height=10,
-            width=48,
-            bg="#ffffff",
-            fg="#222222",
-            highlightthickness=1,
-            highlightbackground="#d9dbe1",
+        table_wrap = ttk.Frame(wrap, style="Card.TFrame")
+        table_wrap.pack(fill="both", expand=True)
+        self.manual_words_table = ttk.Treeview(
+            table_wrap,
+            columns=("en", "note"),
+            show="headings",
+            height=12,
+            selectmode="browse",
         )
-        self.manual_words_text.pack(fill="x")
-        self.manual_words_text.focus_set()
+        self.manual_words_table.heading("en", text="English")
+        self.manual_words_table.heading("note", text="Notes")
+        self.manual_words_table.column("en", width=260, anchor="w")
+        self.manual_words_table.column("note", width=420, anchor="w")
+        self.manual_words_table.grid(row=0, column=0, sticky="nsew")
+        self.manual_words_table_scroll = ttk.Scrollbar(
+            table_wrap, orient="vertical", command=self.manual_words_table.yview
+        )
+        self.manual_words_table_scroll.grid(row=0, column=1, sticky="ns")
+        self.manual_words_table.configure(yscrollcommand=self.manual_words_table_scroll.set)
+        table_wrap.grid_rowconfigure(0, weight=1)
+        table_wrap.grid_columnconfigure(0, weight=1)
+        self.manual_words_table.bind("<Control-v>", self.on_manual_preview_paste)
+        self.manual_words_table.bind("<Control-V>", self.on_manual_preview_paste)
+        self.manual_words_table.bind("<Double-1>", self._start_manual_preview_edit)
+        self.manual_words_table.bind("<F2>", self._start_manual_preview_edit)
+        self.manual_words_table.bind("<Delete>", lambda _e: self._delete_selected_manual_preview_rows())
+        self.manual_words_table.bind("<Escape>", self._cancel_manual_preview_edit)
+        self.manual_words_table.focus_set()
 
-        def _on_close():
-            self.manual_words_window.destroy()
-            self.manual_words_window = None
-            self.manual_words_text = None
+        helper = ttk.Label(
+            wrap,
+            text="Tip: press Ctrl+V to paste, or add rows and edit cells directly.",
+            style="Card.TLabel",
+            foreground="#666",
+        )
+        helper.pack(anchor="w", pady=(6, 0))
 
         row = ttk.Frame(wrap, style="Card.TFrame")
         row.pack(fill="x", pady=(8, 0))
+        ttk.Button(
+            row,
+            text="Paste Clipboard",
+            command=self.on_manual_preview_paste,
+        ).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(
+            row,
+            text="Add Row",
+            command=self._add_manual_preview_row,
+        ).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(
+            row,
+            text="Delete Selected",
+            command=self._delete_selected_manual_preview_rows,
+        ).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(
+            row,
+            text="Clear",
+            command=self._clear_manual_preview,
+        ).pack(side=tk.LEFT, padx=(0, 12))
         ttk.Button(
             row,
             text="Replace List",
@@ -543,20 +820,20 @@ class MainView(ttk.Frame):
         ttk.Button(
             row,
             text="Close",
-            command=_on_close,
+            command=self._close_manual_words_window,
         ).pack(side=tk.LEFT)
 
-        self.manual_words_window.protocol("WM_DELETE_WINDOW", _on_close)
+        self.manual_words_window.protocol("WM_DELETE_WINDOW", self._close_manual_words_window)
 
     def on_word_table_paste(self, _event=None):
         try:
             raw = self.clipboard_get()
         except Exception:
             return "break"
-        words = self._parse_manual_words(raw)
-        if not words:
+        rows = self._parse_manual_rows(raw)
+        if not rows:
             return "break"
-        self._apply_manual_words(words, mode="append")
+        self._apply_manual_words(rows, mode="append")
         return "break"
 
     def _get_selected_indices(self):
@@ -629,24 +906,46 @@ class MainView(ttk.Frame):
         self.translations[word] = zh_text
         iid = str(row_idx)
         if self.word_table.exists(iid):
-            self.word_table.item(iid, values=(word, zh_text))
+            note = self.store.notes[row_idx] if row_idx < len(self.store.notes) else ""
+            self.word_table.item(iid, values=(word, note, zh_text))
 
     def start_edit_selected_word(self, _event=None):
-        row_idx = self._get_selected_index()
-        if row_idx is None or not self.word_table:
+        return self.start_edit_word_cell(column_id="#1")
+
+    def start_edit_word_cell(self, event=None, column_id=None):
+        if not self.word_table:
             return "break"
-        if row_idx >= len(self.store.words):
+        row_idx = self._get_selected_index()
+        target_column = column_id or "#1"
+        if event is not None:
+            row_id = self.word_table.identify_row(event.y)
+            hit_column = self.word_table.identify_column(event.x)
+            if row_id:
+                try:
+                    row_idx = int(row_id)
+                except Exception:
+                    row_idx = self._get_selected_index()
+                self.word_table.selection_set(row_id)
+                self.word_table.focus(row_id)
+            if hit_column in ("#1", "#2"):
+                target_column = hit_column
+        if row_idx is None or row_idx >= len(self.store.words):
+            return "break"
+        if target_column not in ("#1", "#2"):
             return "break"
         self.cancel_word_edit()
         iid = str(row_idx)
-        bbox = self.word_table.bbox(iid, "#1")
+        bbox = self.word_table.bbox(iid, target_column)
         if not bbox:
             return "break"
 
         x, y, width, height = bbox
-        current_word = self.store.words[row_idx]
+        if target_column == "#2":
+            current_value = self.store.notes[row_idx] if row_idx < len(self.store.notes) else ""
+        else:
+            current_value = self.store.words[row_idx]
         entry = ttk.Entry(self.word_table)
-        entry.insert(0, current_word)
+        entry.insert(0, current_value)
         entry.select_range(0, tk.END)
         entry.focus_set()
         entry.place(x=x, y=y, width=width, height=height)
@@ -655,6 +954,7 @@ class MainView(ttk.Frame):
         entry.bind("<FocusOut>", lambda _e, idx=row_idx: self.finish_edit_word(idx))
         self.word_edit_entry = entry
         self.word_edit_row = row_idx
+        self.word_edit_column = target_column
         return "break"
 
     def cancel_word_edit(self, _event=None):
@@ -662,28 +962,50 @@ class MainView(ttk.Frame):
             self.word_edit_entry.destroy()
         self.word_edit_entry = None
         self.word_edit_row = None
+        self.word_edit_column = None
         return "break"
 
     def finish_edit_word(self, row_idx=None):
         if not self.word_edit_entry:
             return "break"
         idx = self.word_edit_row if row_idx is None else row_idx
-        new_word = re.sub(r"\s+", " ", str(self.word_edit_entry.get() or "").strip())
+        edit_column = self.word_edit_column or "#1"
+        raw_value = str(self.word_edit_entry.get() or "").strip()
+        new_word = re.sub(r"\s+", " ", raw_value)
         self.cancel_word_edit()
         if idx is None or idx < 0 or idx >= len(self.store.words):
             return "break"
-        if not new_word:
+        if edit_column == "#1" and not new_word:
             messagebox.showinfo("Info", "Word cannot be empty.")
+            return "break"
+        iid = str(idx)
+
+        if edit_column == "#2":
+            old_note = self.store.notes[idx] if idx < len(self.store.notes) else ""
+            if idx >= len(self.store.notes):
+                self.store.notes.extend([""] * (idx - len(self.store.notes) + 1))
+            if new_word == old_note:
+                return "break"
+            self.store.notes[idx] = new_word
+            zh = self.translations.get(self.store.words[idx]) or ""
+            if self.word_table and self.word_table.exists(iid):
+                self.word_table.item(iid, values=(self.store.words[idx], new_word, zh))
+            saved = False
+            source_path = str(self.store.get_current_source_path() or "").lower()
+            if source_path.endswith(".csv"):
+                saved = self._save_words_back_to_source()
+            source_note = " and saved to source file" if saved else ""
+            self.status_var.set(f"Updated note for '{self.store.words[idx]}'{source_note}.")
             return "break"
 
         old_word = self.store.words[idx]
         if new_word == old_word:
             return "break"
 
+        old_note = self.store.notes[idx] if idx < len(self.store.notes) else ""
         self.store.words[idx] = new_word
-        iid = str(idx)
         if self.word_table and self.word_table.exists(iid):
-            self.word_table.item(iid, values=(new_word, "Translating..."))
+            self.word_table.item(iid, values=(new_word, old_note, "Translating..."))
 
         saved = self._save_words_back_to_source()
         self._translate_single_word_async(idx, new_word)
@@ -697,12 +1019,17 @@ class MainView(ttk.Frame):
         self.cancel_word_edit()
         self.translation_token += 1
         token = self.translation_token
-        self.translations = {}
+        cached = get_cached_translations(words)
+        self.translations = dict(cached)
         self.word_table.delete(*self.word_table.get_children())
         for idx, w in enumerate(words):
-            self.word_table.insert("", tk.END, iid=str(idx), values=(w, "Translating..."))
+            note = self.store.notes[idx] if idx < len(self.store.notes) else ""
+            zh = cached.get(w)
+            self.word_table.insert("", tk.END, iid=str(idx), values=(w, note, zh if zh is not None else ""))
         self.update_empty_state()
-        self._start_translation_job(words, token)
+        missing_words = [w for w in words if w not in cached]
+        if missing_words:
+            self._start_translation_job(missing_words, token)
 
     def _start_translation_job(self, words, token):
         if not words:
@@ -719,12 +1046,13 @@ class MainView(ttk.Frame):
     def _apply_translations(self, token, translated):
         if token != self.translation_token or not self.word_table:
             return
-        self.translations = dict(translated)
+        self.translations.update(translated)
         for idx, word in enumerate(self.store.words):
             if not self.word_table.exists(str(idx)):
                 continue
             zh = self.translations.get(word) or ""
-            self.word_table.item(str(idx), values=(word, zh))
+            note = self.store.notes[idx] if idx < len(self.store.notes) else ""
+            self.word_table.item(str(idx), values=(word, note, zh))
 
     def update_empty_state(self):
         if self.store.words:
@@ -762,6 +1090,403 @@ class MainView(ttk.Frame):
         self.render_words(words)
         self.refresh_history()
         self.reset_playback_state()
+
+    # Corpus find
+    def open_find_window(self):
+        if self.find_window and self.find_window.winfo_exists():
+            self.find_window.lift()
+            self._set_find_query_from_selection()
+            return
+
+        self.find_window = tk.Toplevel(self)
+        self.find_window.title("Find Corpus Sentences")
+        self.find_window.configure(bg="#f6f7fb")
+        self.find_window.minsize(900, 620)
+
+        wrap = ttk.Frame(self.find_window, style="Card.TFrame")
+        wrap.pack(fill="both", expand=True, padx=10, pady=10)
+        wrap.grid_columnconfigure(0, weight=3)
+        wrap.grid_columnconfigure(1, weight=2)
+        wrap.grid_rowconfigure(2, weight=1)
+
+        ttk.Label(wrap, text="Find Corpus Sentences", style="Card.TLabel").grid(
+            row=0, column=0, columnspan=2, sticky="w"
+        )
+        ttk.Label(
+            wrap,
+            text="Import txt/docx/pdf files, build a local sentence index, then search by word or phrase.",
+            style="Card.TLabel",
+            foreground="#666",
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 8))
+
+        top = ttk.Frame(wrap, style="Card.TFrame")
+        top.grid(row=2, column=0, sticky="nsew", padx=(0, 10))
+        top.grid_columnconfigure(0, weight=1)
+        top.grid_rowconfigure(2, weight=1)
+        top.grid_rowconfigure(4, weight=0)
+
+        search_row = ttk.Frame(top, style="Card.TFrame")
+        search_row.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        search_row.grid_columnconfigure(0, weight=1)
+        entry = ttk.Entry(search_row, textvariable=self.find_search_var)
+        entry.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        entry.bind("<Return>", lambda _e: self.run_find_search())
+        ttk.Button(search_row, text="Search", command=self.run_find_search).grid(row=0, column=1, padx=(0, 6))
+        ttk.Label(search_row, text="Show", style="Card.TLabel").grid(row=0, column=2, padx=(0, 4))
+        limit_combo = ttk.Combobox(
+            search_row,
+            textvariable=self.find_limit_var,
+            state="readonly",
+            width=5,
+            values=("20", "50", "100"),
+        )
+        limit_combo.grid(row=0, column=3, padx=(0, 6))
+        ttk.Label(search_row, text="results", style="Card.TLabel").grid(row=0, column=4, padx=(0, 6))
+        ttk.Button(search_row, text="Use Selected Word", command=self.search_selected_word_in_corpus).grid(
+            row=0, column=5, padx=(0, 6)
+        )
+        ttk.Button(search_row, text="Import Docs", command=self.import_find_documents).grid(row=0, column=6)
+
+        ttk.Label(top, textvariable=self.find_status_var, style="Card.TLabel", foreground="#444").grid(
+            row=1, column=0, sticky="w", pady=(0, 8)
+        )
+
+        self.find_results_table = ttk.Treeview(
+            top,
+            columns=("sentence", "source"),
+            show="headings",
+            height=18,
+            selectmode="browse",
+        )
+        self.find_results_table.heading("sentence", text="Sentence")
+        self.find_results_table.heading("source", text="Source")
+        self.find_results_table.column("sentence", width=600, anchor="w")
+        self.find_results_table.column("source", width=260, anchor="w")
+        find_scroll = ttk.Scrollbar(top, orient="vertical", command=self.find_results_table.yview)
+        self.find_results_table.configure(yscrollcommand=find_scroll.set)
+        self.find_results_table.grid(row=2, column=0, sticky="nsew")
+        find_scroll.grid(row=2, column=1, sticky="ns")
+        self.find_results_table.bind("<<TreeviewSelect>>", self._on_find_result_select)
+
+        ttk.Label(top, text="Preview", style="Card.TLabel").grid(row=3, column=0, sticky="w", pady=(8, 4))
+        self.find_preview_text = tk.Text(
+            top,
+            wrap="word",
+            height=7,
+            bg="#ffffff",
+            fg="#222222",
+            highlightthickness=1,
+            highlightbackground="#d9dbe1",
+        )
+        self.find_preview_text.grid(row=4, column=0, columnspan=2, sticky="ew")
+        self.find_preview_text.tag_configure("hit", background="#ffe58f", foreground="#111111")
+        self.find_preview_text.configure(state="disabled")
+
+        side = ttk.Frame(wrap, style="Card.TFrame")
+        side.grid(row=2, column=1, sticky="nsew")
+        side.grid_rowconfigure(1, weight=1)
+        side.grid_columnconfigure(0, weight=1)
+
+        side_header = ttk.Frame(side, style="Card.TFrame")
+        side_header.grid(row=0, column=0, sticky="ew")
+        side_header.grid_columnconfigure(0, weight=1)
+        ttk.Label(side_header, text="Indexed Documents", style="Card.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Button(side_header, text="Clear Filter", command=self.clear_find_document_filter).grid(
+            row=0, column=1, sticky="e"
+        )
+        self.find_docs_list = tk.Listbox(
+            side,
+            bg="#ffffff",
+            fg="#222222",
+            selectbackground="#cce1ff",
+            selectforeground="#111111",
+            highlightthickness=1,
+            highlightbackground="#d9dbe1",
+        )
+        self.find_docs_list.grid(row=1, column=0, sticky="nsew", pady=(6, 0))
+
+        self._set_find_query_from_selection()
+        self.refresh_find_corpus_summary()
+
+        def _on_close():
+            self.find_window.destroy()
+            self.find_window = None
+            self.find_results_table = None
+            self.find_preview_text = None
+            self.find_docs_list = None
+            self.find_doc_items = []
+            self.find_result_items = {}
+
+        self.find_window.protocol("WM_DELETE_WINDOW", _on_close)
+
+    def _set_find_query_from_selection(self):
+        selected_idx = self._get_selected_index()
+        if selected_idx is None or selected_idx >= len(self.store.words):
+            return
+        self.find_search_var.set(self.store.words[selected_idx])
+
+    def refresh_find_corpus_summary(self):
+        try:
+            stats = corpus_stats()
+            docs = list_corpus_documents(limit=200)
+        except Exception as e:
+            if self.find_docs_list:
+                self.find_docs_list.delete(0, tk.END)
+            self.find_status_var.set(str(e))
+            return
+        if self.find_docs_list:
+            self.find_docs_list.delete(0, tk.END)
+            self.find_doc_items = list(docs)
+            for item in docs:
+                label = (
+                    f"{item.get('name')} "
+                    f"({int(item.get('chunk_count') or 0)} chunks / {int(item.get('sentence_count') or 0)} sentences)"
+                )
+                self.find_docs_list.insert(tk.END, label)
+        self.find_status_var.set(
+            f"Indexed {stats.get('documents', 0)} documents / {stats.get('chunks', 0)} chunks / {stats.get('sentences', 0)} sentences. NLP: {stats.get('nlp_mode')}"
+        )
+
+    def _clear_find_task_queue(self):
+        try:
+            while True:
+                self.find_task_queue.get_nowait()
+        except queue.Empty:
+            return
+
+    def _emit_find_task_event(self, event_type, token, payload=None):
+        try:
+            self.find_task_queue.put_nowait((event_type, token, payload))
+        except Exception:
+            return
+
+    def _poll_find_task_events(self, token):
+        if token != self.find_active_token:
+            return
+        done = False
+        try:
+            while True:
+                event_type, event_token, payload = self.find_task_queue.get_nowait()
+                if event_token != token:
+                    continue
+                if event_type == "import_done":
+                    self._apply_find_import_result(payload or {})
+                elif event_type == "search_done":
+                    self._apply_find_search_result(payload or {})
+                elif event_type == "error":
+                    messagebox.showerror("Find Error", str(payload or "Unknown error"))
+                elif event_type == "done":
+                    done = True
+        except queue.Empty:
+            pass
+        if not done and token == self.find_active_token:
+            self.after(80, lambda t=token: self._poll_find_task_events(t))
+
+    def import_find_documents(self):
+        if not self.find_window:
+            self.open_find_window()
+        try:
+            get_nlp_status()
+        except Exception as e:
+            messagebox.showerror("Find Setup Error", str(e))
+            self.find_status_var.set(str(e))
+            return
+        paths = filedialog.askopenfilenames(
+            title="Choose documents",
+            filetypes=[("Supported files", "*.txt *.docx *.pdf"), ("Text", "*.txt"), ("Word", "*.docx"), ("PDF", "*.pdf")],
+        )
+        if not paths:
+            return
+        self.find_task_token += 1
+        token = self.find_task_token
+        self.find_active_token = token
+        self._clear_find_task_queue()
+        self.find_status_var.set("Importing documents and building sentence index...")
+
+        import threading
+
+        def _run():
+            try:
+                result = import_corpus_files(paths)
+                self._emit_find_task_event("import_done", token, result)
+            except Exception as e:
+                self._emit_find_task_event("error", token, str(e))
+            self._emit_find_task_event("done", token, None)
+
+        threading.Thread(target=_run, daemon=True).start()
+        self.after(80, lambda t=token: self._poll_find_task_events(t))
+
+    def _apply_find_import_result(self, payload):
+        self.refresh_find_corpus_summary()
+        files_count = int(payload.get("files") or 0)
+        chunk_count = int(payload.get("chunks") or 0)
+        sent_count = int(payload.get("sentences") or 0)
+        errors = list(payload.get("errors") or [])
+        status = f"Imported {files_count} files and indexed {chunk_count} chunks / {sent_count} sentences."
+        if errors:
+            status += f" Errors: {len(errors)}"
+        self.find_status_var.set(status)
+        if errors:
+            messagebox.showerror("Import Warning", "\n".join(errors[:10]))
+
+    def run_find_search(self):
+        query = str(self.find_search_var.get() or "").strip()
+        if not query:
+            messagebox.showinfo("Info", "Enter a word or phrase first.")
+            return
+        try:
+            limit = int(str(self.find_limit_var.get() or "20").strip())
+        except Exception:
+            limit = 20
+            self.find_limit_var.set("20")
+        try:
+            get_nlp_status()
+        except Exception as e:
+            messagebox.showerror("Find Setup Error", str(e))
+            self.find_status_var.set(str(e))
+            return
+        self.find_task_token += 1
+        token = self.find_task_token
+        self.find_active_token = token
+        self._clear_find_task_queue()
+        selected_doc = self._get_selected_find_document()
+        selected_doc_name = str(selected_doc.get("name") or "").strip() if selected_doc else ""
+        if selected_doc_name:
+            self.find_status_var.set(
+                f"Searching '{query}' in {selected_doc_name} (up to {limit} results)..."
+            )
+        else:
+            self.find_status_var.set(f"Searching corpus for '{query}' (up to {limit} results)...")
+
+        import threading
+
+        def _run():
+            try:
+                result = search_corpus(
+                    query,
+                    limit=limit,
+                    document_path=selected_doc.get("path") if selected_doc else None,
+                )
+                self._emit_find_task_event("search_done", token, result)
+            except Exception as e:
+                self._emit_find_task_event("error", token, str(e))
+            self._emit_find_task_event("done", token, None)
+
+        threading.Thread(target=_run, daemon=True).start()
+        self.after(80, lambda t=token: self._poll_find_task_events(t))
+
+    def search_selected_word_in_corpus(self):
+        if not self.find_window or not self.find_window.winfo_exists():
+            self.open_find_window()
+        self._set_find_query_from_selection()
+        self.run_find_search()
+
+    def _get_selected_find_document(self):
+        if not self.find_docs_list or not self.find_doc_items:
+            return None
+        selection = self.find_docs_list.curselection()
+        if not selection:
+            return None
+        idx = int(selection[0])
+        if idx < 0 or idx >= len(self.find_doc_items):
+            return None
+        return self.find_doc_items[idx]
+
+    def clear_find_document_filter(self):
+        if self.find_docs_list:
+            self.find_docs_list.selection_clear(0, tk.END)
+        self.find_status_var.set("Document filter cleared. Search will use all indexed documents.")
+
+    def _apply_find_search_result(self, payload):
+        results = list(payload.get("results") or [])
+        query = str(payload.get("query") or "").strip()
+        lemmas = list(payload.get("lemmas") or [])
+        document_path = str(payload.get("document_path") or "").strip()
+        filtered_name = ""
+        if document_path and self.find_doc_items:
+            for item in self.find_doc_items:
+                if str(item.get("path") or "").strip() == document_path:
+                    filtered_name = str(item.get("name") or "").strip()
+                    break
+        self.find_result_items = {}
+        if self.find_results_table:
+            self.find_results_table.delete(*self.find_results_table.get_children())
+            for idx, item in enumerate(results):
+                source_bits = [item.get("source_file") or ""]
+                for key in ("test_label", "section_label", "part_label", "speaker_label", "question_label"):
+                    value = str(item.get(key) or "").strip()
+                    if value:
+                        source_bits.append(value)
+                if item.get("page_num"):
+                    source_bits.append(f"p.{item.get('page_num')}")
+                source = " · ".join(bit for bit in source_bits if bit)
+                item = dict(item)
+                item["source_text"] = source
+                row_id = f"find_{idx}"
+                self.find_result_items[row_id] = item
+                self.find_results_table.insert(
+                    "",
+                    tk.END,
+                    iid=row_id,
+                    values=(item.get("sentence_text") or "", source),
+                )
+            children = self.find_results_table.get_children()
+            if children:
+                first = children[0]
+                self.find_results_table.selection_set(first)
+                self.find_results_table.focus(first)
+                self._show_find_result_preview(first)
+            else:
+                self._clear_find_preview()
+        else:
+            self._clear_find_preview()
+        if filtered_name:
+            self.find_status_var.set(
+                f"Found {len(results)} results for '{query}' in {filtered_name}. Lemmas: {', '.join(lemmas) if lemmas else 'n/a'}"
+            )
+        else:
+            self.find_status_var.set(
+                f"Found {len(results)} results for '{query}'. Lemmas: {', '.join(lemmas) if lemmas else 'n/a'}"
+            )
+
+    def _clear_find_preview(self):
+        if not self.find_preview_text:
+            return
+        self.find_preview_text.configure(state="normal")
+        self.find_preview_text.delete("1.0", tk.END)
+        self.find_preview_text.configure(state="disabled")
+
+    def _on_find_result_select(self, _event=None):
+        if not self.find_results_table:
+            return
+        selection = self.find_results_table.selection()
+        if not selection:
+            self._clear_find_preview()
+            return
+        self._show_find_result_preview(selection[0])
+
+    def _show_find_result_preview(self, row_id):
+        item = self.find_result_items.get(row_id)
+        if not item or not self.find_preview_text:
+            self._clear_find_preview()
+            return
+        sentence = str(item.get("sentence_text") or "")
+        source = str(item.get("source_text") or "")
+        ranges = list(item.get("highlight_ranges") or [])
+        text = self.find_preview_text
+        text.configure(state="normal")
+        text.delete("1.0", tk.END)
+        text.insert("1.0", sentence)
+        for start, end in ranges:
+            if start < end:
+                text.tag_add("hit", f"1.0+{int(start)}c", f"1.0+{int(end)}c")
+        if source:
+            text.insert(tk.END, "\n\n")
+            source_start = text.index(tk.END)
+            text.insert(tk.END, source)
+            text.tag_add("source", source_start, tk.END)
+        text.tag_configure("source", foreground="#666666")
+        text.configure(state="disabled")
 
     # IELTS passage
     def open_passage_window(self):
@@ -1843,12 +2568,25 @@ class MainView(ttk.Frame):
 
     def update_right_visibility(self):
         if self.history_visible or self.check_visible:
-            self.right.grid()
-            if not self.wordlist_hidden:
-                self.mid_sep.grid()
-            else:
+            if self.wordlist_hidden:
+                if self.main:
+                    self.main.grid_columnconfigure(0, weight=1)
+                    self.main.grid_columnconfigure(2, weight=0)
+                self.right.grid_configure(row=0, column=0, columnspan=3, sticky="nsew")
                 self.mid_sep.grid_remove()
+            else:
+                if self.main:
+                    self.main.grid_columnconfigure(0, weight=5)
+                    self.main.grid_columnconfigure(2, weight=3)
+                self.left.grid_configure(columnspan=1)
+                self.right.grid_configure(row=0, column=2, columnspan=1, sticky="nsew")
+                self.mid_sep.grid()
+            self.right.grid()
         else:
+            if self.main:
+                self.main.grid_columnconfigure(0, weight=1)
+                self.main.grid_columnconfigure(2, weight=0)
+            self.left.grid_configure(columnspan=3)
             self.right.grid_remove()
             self.mid_sep.grid_remove()
 
@@ -1904,9 +2642,9 @@ class MainView(ttk.Frame):
             self.play_current()
             self.schedule_next()
 
-    def on_word_double_click(self, _event=None):
-        # Double-click enters inline edit mode for the selected word.
-        self.start_edit_selected_word()
+    def on_word_double_click(self, event=None):
+        # Double-click edits the clicked word/note cell.
+        self.start_edit_word_cell(event=event)
         return "break"
 
     def on_word_right_click(self, event):
@@ -2061,14 +2799,9 @@ class MainView(ttk.Frame):
         self.wordlist_hidden = not self.wordlist_hidden
         if self.wordlist_hidden:
             self.left.grid_remove()
-            self.mid_sep.grid_remove()
-            self.player_frame.grid_remove()
-            self.status_label.grid_remove()
             self.hide_words_btn.config(text="Show Word List")
         else:
             self.left.grid()
-            self.player_frame.grid()
-            self.status_label.grid()
             self.hide_words_btn.config(text="Hide Word List")
         self.update_right_visibility()
 

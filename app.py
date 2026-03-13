@@ -52,9 +52,11 @@ def init_style(root):
 def main():
     root = tk.Tk()
     root.title("Word Speaker")
+    root.geometry("1480x860")
+    root.minsize(1320, 760)
     init_style(root)
 
-    MainView(root).pack(padx=20, pady=20)
+    MainView(root).pack(fill="both", expand=True, padx=20, pady=20)
     root.mainloop()
 
 

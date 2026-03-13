@@ -8,26 +8,34 @@ from datetime import datetime
 class WordStore:
     def __init__(self):
         self.words = []
+        self.notes = []
         self.current_source_path = None
         self.history_path = os.path.join(os.path.dirname(__file__), "history.json")
         self.stats_path = os.path.join(os.path.dirname(__file__), "word_stats.json")
 
     def clear(self):
         self.words = []
+        self.notes = []
         self.current_source_path = None
 
-    def set_words(self, words):
+    def set_words(self, words, notes=None):
         self.words = list(words)
+        base_notes = list(notes or [])
+        if len(base_notes) < len(self.words):
+            base_notes.extend([""] * (len(self.words) - len(base_notes)))
+        self.notes = base_notes[: len(self.words)]
         self.current_source_path = None
 
     def load_from_file(self, path):
         words = []
+        notes = []
         if path.endswith(".txt"):
             with open(path, "r", encoding="utf-8") as f:
                 for line in f:
                     word = line.strip()
                     if word:
                         words.append(word)
+                        notes.append("")
         elif path.endswith(".csv"):
             with open(path, "r", encoding="utf-8") as f:
                 reader = csv.reader(f)
@@ -36,7 +44,10 @@ class WordStore:
                         word = row[0].strip()
                         if word:
                             words.append(word)
+                            note = row[1].strip() if len(row) > 1 else ""
+                            notes.append(note)
         self.words = words
+        self.notes = notes
         self.current_source_path = os.path.abspath(path)
         self.add_history(path)
 
@@ -77,10 +88,16 @@ class WordStore:
         elif target.lower().endswith(".csv"):
             with open(target, "w", encoding="utf-8", newline="") as f:
                 writer = csv.writer(f)
-                for word in self.words:
+                for idx, word in enumerate(self.words):
                     value = str(word or "").strip()
                     if value:
-                        writer.writerow([value])
+                        note = ""
+                        if idx < len(self.notes):
+                            note = str(self.notes[idx] or "").strip()
+                        if note:
+                            writer.writerow([value, note])
+                        else:
+                            writer.writerow([value])
         else:
             raise ValueError("Unsupported file type for save.")
 
