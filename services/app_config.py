@@ -7,6 +7,7 @@ _CONFIG_PATH = Path(__file__).resolve().parent.parent / "data" / "app_config.jso
 _DEFAULT_CONFIG = {
     "gemini_api_key": "",
     "gemini_model": "gemini-2.5-flash",
+    "ui_language": "zh",
 }
 
 
@@ -51,4 +52,15 @@ def get_generation_model():
 def set_generation_model(model_name):
     config = load_config()
     config["gemini_model"] = str(model_name or _DEFAULT_CONFIG["gemini_model"]).strip()
+    save_config(config)
+
+
+def get_ui_language():
+    language = str(load_config().get("ui_language") or _DEFAULT_CONFIG["ui_language"]).strip().lower()
+    return "en" if language == "en" else "zh"
+
+
+def set_ui_language(language):
+    config = load_config()
+    config["ui_language"] = "en" if str(language or "").strip().lower() == "en" else "zh"
     save_config(config)

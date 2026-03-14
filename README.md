@@ -1,42 +1,43 @@
 # Word Speaker
 
-A Windows desktop app for vocabulary study, pronunciation, translation, IELTS-style content generation, and local corpus sentence search.
+A Windows desktop app for vocabulary study, pronunciation practice, dictation, IELTS-style content generation, and local corpus sentence search.
 
 ## Features
+
 - Import `.txt` / `.csv` word lists
 - Type or paste words directly into the app
 - Paste two-column tables from Google Docs / Google Sheets into the manual import window
-- Main word list now uses `# / Word / Notes`
-- The `Word` column shows two lines: `English` on top, then `part of speech + Chinese translation`
-- Edit `Word` and `Notes` directly in the list and save changes back to the source file when the list came from a file
-- Manual pasted lists can be saved with `Save As`
-- If a manual pasted list has not been saved yet, the app asks whether to save it before closing
-- `New List` creates a blank list so you can build a new vocabulary file from scratch
+- Main word list uses `# / Word / Notes`
+- The `Word` column shows two lines: `English`, then `part of speech + Chinese translation`
+- Edit `Word` and `Notes` directly in the list and save changes back to the source file
+- Manual pasted lists support `Save As`
+- Unsaved manual lists trigger a save prompt before closing
+- `New List` creates a blank list for building a new vocabulary file
 - Play in order, random (no repeat), or click-to-play
-- Double-click a word to edit it
-- Double-click a word or use the right-side action buttons to play pronunciation
-- Dictation now has a dedicated study flow with `全部 / 近期错词`, `从某词开始`, and `开始学习`
-- The first dictation study mode is `在线拼写`, with countdown timing, speed control, and live right/wrong feedback
+- Double-click a word to play pronunciation
+- Right-click a word for edit, corpus search, sentence generation, and cached-audio inspection
+- Dictation opens in a dedicated window with `全部 / 近期错词`
+- Dictation supports `从某词开始`, `开始学习`, and manual wrong-word addition
+- The first dictation study mode is `在线拼写`, with countdown timing, playback speed control, replay, previous-word, play/pause, and live right/wrong feedback
+- Wrong answers are stored locally, sorted by mistake count, and shown in the recent wrong-word list with error causes
+- History items can be removed inside the app, and matching audio cache entries are cleaned up at the same time
 - User-selectable TTS source: Gemini TTS, local Kokoro, or local Piper
-- Automatic fallback to Kokoro when Gemini playback fails and local Kokoro models are available
+- Automatic fallback to Kokoro when Gemini playback fails and Kokoro is available locally
 - Built-in English -> Chinese translation with Argos Translate
 - Built-in part-of-speech tagging with spaCy, cached locally for repeated words
 - Part of speech and Chinese translation can be edited by the user and stored locally
 - Translation cache is stored locally, so repeated words do not need to be translated again
-- Word audio is cached locally; if words come from a source file, cached wav files are stored beside that file
-- After importing or replacing a list, the app can pre-generate word audio in the background for smoother playback
+- Single-word audio is cached under `data/audio_cache/words/`
+- Cached word audio now stores backend metadata so the app can distinguish `gemini`, `kokoro`, and `piper`
+- If Gemini is rate-limited during pre-cache, the app can keep local audio first and later replace it in the background with Gemini audio when quota allows
 - Generate IELTS-listening-style passages from imported words and read them with the selected TTS source
 - Generate IELTS-style example sentences for selected words
 - Practice mode for generated passages
-- Gemini API is used for article and sentence generation
-- The app asks for a Gemini API key at startup and tests it before enabling AI features
-- `Find` window can import `.txt` / `.docx` / `.pdf`, build a local sentence index, and search by word or phrase
-- `Find` supports result highlighting, result count selection (`20 / 50 / 100`), and filtering by the selected document on the right
-- Local corpus data is stored in `data/corpus_index.db`
+- `Find` can import `.txt` / `.docx` / `.pdf`, build a local sentence index, and search by word or phrase
 
-## Run (CMD)
+## Run
 
-Requires **64-bit Python**. 32-bit Python is not supported.
+Requires **64-bit Python**.
 
 ```bat
 cd /d path\to\word_speaker
@@ -45,7 +46,7 @@ python -m spacy download en_core_web_sm
 python app.py
 ```
 
-If your system uses py to run Python:
+If your system uses `py`:
 
 ```bat
 cd /d path\to\word_speaker
@@ -54,62 +55,80 @@ py -3 -m spacy download en_core_web_sm
 py -3 app.py
 ```
 
-When the app opens, paste your own Gemini API key into the popup window and click `Test and Save`.
+When the app opens, paste your Gemini API key into the popup window and click `Test and Save`.
+
+## Dependencies
+
+- `spaCy` is used for English part-of-speech tagging and basic lexical analysis
+- `en_core_web_sm` is the expected spaCy model for the current workflow
+- `Argos Translate` is used for local English -> Chinese translation
+- `Gemini API` is used for passage generation, example sentence generation, and Gemini TTS
+- `Kokoro` and `Piper` are optional local TTS backends
 
 ## TTS Behavior
 
-- Pick the active source in `Settings > Source`.
-- `Gemini TTS` is the default online source and requires a valid Gemini API key plus network access.
-- `Kokoro` is an optional offline source and only appears when both local model files exist in `data/models/kokoro/`.
-- `Piper` is bundled as a project-local local source. It uses the vendored Python runtime and models under `data/models/piper/`.
-- If the selected source is Gemini and Gemini playback fails, the app automatically falls back to Kokoro when Kokoro is available locally.
-- Single-word audio is cached locally. If the current list came from a source file, the cache is created beside that file. Otherwise, audio is stored under `data/audio_cache/words/`.
-- Passage playback keeps one source for the whole article. It does not mix Gemini and Kokoro inside the same generated passage.
+- Pick the active source in `Settings > Source`
+- `Gemini TTS` is the default online source and requires a valid Gemini API key plus network access
+- `Kokoro` is an optional offline source and only appears when local model files exist in `data/models/kokoro/`
+- `Piper` is a project-local local source using models under `data/models/piper/`
+- If the selected source is Gemini and Gemini playback fails, the app automatically falls back to Kokoro when Kokoro is available
+- Single-word audio is cached under `data/audio_cache/words/`
+- Each cached word can carry metadata that marks its real backend source and the desired backend target
+- Pending Gemini replacements are persisted in a queue, so local fallback audio can still be replaced after restarting the app
+- Passage playback keeps one source for the whole article and does not mix backends inside the same generated passage
 
 ## Local Runtime Files
 
 - `data/models/kokoro/`: optional offline Kokoro model files
-- `data/models/piper/`: bundled or custom Piper `*.onnx` voice models and matching `*.onnx.json` config files
+- `data/models/piper/`: Piper `*.onnx` voice models and matching `*.onnx.json` config files
 - `data/audio_cache/`: generated local audio cache
+- `data/audio_cache/pending_gemini_replacements.json`: persisted queue of local cache files waiting to be replaced by Gemini
 - `data/pos_cache.json`: cached part-of-speech labels
 - `data/translation_cache.json`: cached translations
-- `vendor/site-packages/`: optional project-local Python runtime dependencies for local packaging or isolated runs
+- `data/dictation_stats.json`: wrong-word and dictation statistics
+- `vendor/site-packages/`: optional project-local Python runtime dependencies
 
-## Input format
-- `.txt`: one word per line
+## Input Format
+
+- `.txt`: one word per line, or `word<TAB>note`
 - `.csv`: first column = English, second column = Notes
 - Manual input window:
   - one word per line, or
   - paste a two-column table from Google Docs / Sheets
 
 ## Main UI
-- Left side: import, manual paste/type, save-as, study list, playback, and settings
-- Right side: current word details plus tabs for `Review / Dictation / History / Tools`
+
+- Left side: import, manual paste/type, save-as, new list, study list, playback, settings, and dictation entry
+- Right side: current word details plus tabs for `Review / History / Tools`
 - Current word details show the selected word, part of speech, translation, notes, and quick actions
 - The word list is displayed in a book-style layout with numbering, the English word on the first line, and `part of speech + Chinese translation` on the second line
 
 ## Dictation
+
 - Main dictation page has two list modes: `全部` and `近期错词`
 - Two entry buttons are provided: `从某词开始` and `开始学习`
-- `从某词开始` opens an in-tab picker so you can jump into dictation from any word in the current list mode
-- `开始学习` enters the first study mode: `在线拼写`
-- `在线拼写` supports playback speed presets, countdown timing, replay, pause, next-word controls, and live red/green answer feedback
+- `从某词开始` opens an in-window picker so you can jump into dictation from any word in the current list mode
+- `开始学习` opens the study-mode popup; the first implemented mode is `在线拼写`
+- `在线拼写` supports playback speed presets, countdown timing, replay, pause, previous-word, and live red/green answer feedback
 - Wrong answers are recorded locally and feed back into the `近期错词` list
+- `近期错词` shows error cause instead of normal notes, sorts by mistake count, and supports manual additions
 
 ## Find Corpus
-- Open the `Find` window from the `Find` button
+
+- Open the `Find` window from the main UI
 - Import `.txt` / `.docx` / `.pdf`
 - The app builds a local sentence index in `data/corpus_index.db`
 - Search by word or phrase
-- If you select a document on the right, search is limited to that document
-- If no document is selected, search runs across the full local corpus
-- Use `Clear Filter` to cancel the current document filter
+- Filter by the selected document, or search across the full corpus
 
 ## Notes
+
 - PDF text extraction is rule-based and works best on text PDFs
 - Scanned PDFs are not OCR-enabled yet
-- Existing local corpus files are intentionally ignored by Git
+- Existing local corpus and runtime cache files are intentionally ignored by Git
 
 ## Credits
-- Speech synthesis is powered by Gemini TTS and optional local Kokoro playback
+
+- Speech synthesis is powered by Gemini TTS and optional local Kokoro / Piper playback
+- Part-of-speech tagging is powered by [spaCy](https://spacy.io/)
 - English -> Chinese translation is powered by [argosopentech/argos-translate](https://github.com/argosopentech/argos-translate)

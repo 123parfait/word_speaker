@@ -2,6 +2,7 @@
 import csv
 import json
 import os
+from difflib import SequenceMatcher
 from datetime import datetime
 
 
@@ -30,14 +31,20 @@ class WordStore:
     def load_from_file(self, path):
         words = []
         notes = []
-        if path.endswith(".txt"):
+        lower_path = str(path or "").lower()
+        if lower_path.endswith(".txt"):
             with open(path, "r", encoding="utf-8") as f:
                 for line in f:
-                    word = line.strip()
+                    raw = str(line or "").rstrip("\r\n")
+                    if "\t" in raw:
+                        word, note = raw.split("\t", 1)
+                    else:
+                        word, note = raw, ""
+                    word = word.strip()
                     if word:
                         words.append(word)
-                        notes.append("")
-        elif path.endswith(".csv"):
+                        notes.append(str(note or "").strip())
+        elif lower_path.endswith(".csv"):
             with open(path, "r", encoding="utf-8") as f:
                 reader = csv.reader(f)
                 for row in reader:
@@ -82,10 +89,16 @@ class WordStore:
 
         if target.lower().endswith(".txt"):
             with open(target, "w", encoding="utf-8", newline="") as f:
-                for word in self.words:
+                for idx, word in enumerate(self.words):
                     value = str(word or "").strip()
                     if value:
-                        f.write(value + "\n")
+                        note = ""
+                        if idx < len(self.notes):
+                            note = str(self.notes[idx] or "").strip()
+                        if note:
+                            f.write(f"{value}\t{note}\n")
+                        else:
+                            f.write(value + "\n")
         elif target.lower().endswith(".csv"):
             with open(target, "w", encoding="utf-8", newline="") as f:
                 writer = csv.writer(f)
@@ -163,6 +176,46 @@ class WordStore:
         except Exception:
             pass
 
+    def _analyze_spelling_error(self, word, user_input):
+        target = str(word or "").strip().casefold()
+        typed = str(user_input or "").strip().casefold()
+        if not target or typed == target:
+            return ""
+        compact_target = target.replace(" ", "")
+        compact_typed = typed.replace(" ", "")
+        if compact_target == compact_typed:
+            return "空格错误"
+        if len(compact_typed) < len(compact_target):
+            base = "缺字母"
+        elif len(compact_typed) > len(compact_target):
+            base = "多字母"
+        else:
+            base = "拼写错误"
+        if sorted(compact_typed) == sorted(compact_target):
+            return "顺序错误"
+        phonetic_target = (
+            compact_target.replace("ph", "f")
+            .replace("tion", "shun")
+            .replace("sion", "zhun")
+            .replace("ck", "k")
+            .replace("c", "k")
+            .replace("q", "k")
+        )
+        phonetic_typed = (
+            compact_typed.replace("ph", "f")
+            .replace("tion", "shun")
+            .replace("sion", "zhun")
+            .replace("ck", "k")
+            .replace("c", "k")
+            .replace("q", "k")
+        )
+        if phonetic_target == phonetic_typed:
+            return "发音型错误"
+        similarity = SequenceMatcher(None, compact_typed, compact_target).ratio()
+        if similarity >= 0.75 and base == "拼写错误":
+            return "近似拼写"
+        return base
+
     def record_dictation_result(self, word, user_input, correct):
         token = str(word or "").strip()
         if not token:
@@ -174,6 +227,7 @@ class WordStore:
                 "wrong_count": 0,
                 "correct_count": 0,
                 "last_wrong_input": "",
+                "last_wrong_type": "",
                 "last_result": "",
                 "last_seen": "",
             }
@@ -183,6 +237,7 @@ class WordStore:
         else:
             entry["wrong_count"] = int(entry.get("wrong_count", 0) or 0) + 1
             entry["last_wrong_input"] = str(user_input or "").strip()
+            entry["last_wrong_type"] = self._analyze_spelling_error(token, user_input)
             entry["last_result"] = "wrong"
         entry["last_seen"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         stats[token] = entry
@@ -206,11 +261,12 @@ class WordStore:
                     "wrong_count": wrong_count,
                     "correct_count": int(entry.get("correct_count", 0) or 0),
                     "last_wrong_input": str(entry.get("last_wrong_input") or ""),
+                    "last_wrong_type": str(entry.get("last_wrong_type") or ""),
                     "last_result": str(entry.get("last_result") or ""),
                     "last_seen": str(entry.get("last_seen") or ""),
                 }
             )
-        items.sort(key=lambda item: (item.get("last_seen", ""), item.get("wrong_count", 0)), reverse=True)
+        items.sort(key=lambda item: (item.get("wrong_count", 0), item.get("last_seen", "")), reverse=True)
         return items[: max(1, int(limit or 50))]
 
     def add_history(self, path):
@@ -230,3 +286,39 @@ class WordStore:
             pass
 
         return history
+
+    def remove_history(self, path):
+        target = os.path.abspath(str(path or "").strip())
+        if not target:
+            return []
+        history = [h for h in self.load_history() if str(h.get("path") or "").strip() != target]
+        try:
+            with open(self.history_path, "w", encoding="utf-8") as f:
+                json.dump(history, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+        return history
+
+    def add_wrong_word(self, word, user_input=""):
+        token = str(word or "").strip()
+        if not token:
+            return False
+        stats = self.load_dictation_stats()
+        entry = stats.get(token)
+        if not isinstance(entry, dict):
+            entry = {
+                "wrong_count": 0,
+                "correct_count": 0,
+                "last_wrong_input": "",
+                "last_wrong_type": "",
+                "last_result": "",
+                "last_seen": "",
+            }
+        entry["wrong_count"] = int(entry.get("wrong_count", 0) or 0) + 1
+        entry["last_wrong_input"] = str(user_input or "").strip()
+        entry["last_wrong_type"] = self._analyze_spelling_error(token, user_input) if user_input else "手动加入"
+        entry["last_result"] = "wrong"
+        entry["last_seen"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        stats[token] = entry
+        self.save_dictation_stats(stats)
+        return True

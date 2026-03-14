@@ -257,6 +257,15 @@ def _extract_error_message(http_error):
         data = json.loads(raw)
     except Exception:
         return raw or str(http_error)
+    if isinstance(data, list):
+        first = data[0] if data else None
+        if isinstance(first, dict):
+            error = first.get("error") or {}
+            message = error.get("message") or first.get("message")
+            return str(message or raw or http_error)
+        return raw or str(http_error)
+    if not isinstance(data, dict):
+        return raw or str(http_error)
     error = data.get("error") or {}
     message = error.get("message") or data.get("message")
     return str(message or raw or http_error)
@@ -296,10 +305,17 @@ def _request_gemini(prompt, api_key, model, timeout, temperature, max_tokens):
     except Exception as e:
         raise RuntimeError(f"Gemini request failed: {e}") from e
 
+    if not isinstance(data, dict):
+        raise RuntimeError(f"Unexpected Gemini response: {data}")
     choices = data.get("choices") or []
     if not choices:
         raise RuntimeError("Gemini returned no choices.")
-    message = choices[0].get("message") or {}
+    first_choice = choices[0]
+    if not isinstance(first_choice, dict):
+        raise RuntimeError(f"Unexpected Gemini choice payload: {first_choice}")
+    message = first_choice.get("message") or {}
+    if not isinstance(message, dict):
+        raise RuntimeError(f"Unexpected Gemini message payload: {message}")
     content = message.get("content")
     if isinstance(content, list):
         parts = []

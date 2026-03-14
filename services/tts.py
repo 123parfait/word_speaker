@@ -7,6 +7,7 @@ import re
 import shutil
 import tempfile
 import threading
+import time
 import urllib.error
 import urllib.request
 import wave
@@ -28,6 +29,7 @@ from services.voice_manager import SOURCE_GEMINI, SOURCE_KOKORO, SOURCE_PIPER, g
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GLOBAL_WORD_CACHE_DIR = os.path.join(BASE_DIR, "data", "audio_cache", "words")
+PENDING_GEMINI_QUEUE_PATH = os.path.join(BASE_DIR, "data", "audio_cache", "pending_gemini_replacements.json")
 KOKORO_SAMPLE_RATE = 24000
 
 _lock = threading.Lock()
@@ -40,6 +42,11 @@ _piper_voices = {}
 _piper_lock = threading.Lock()
 _backend_lock = threading.Lock()
 _backend_status = {}
+_pending_gemini_replacements = {}
+_pending_gemini_lock = threading.Lock()
+_pending_gemini_worker_running = False
+_manual_session_cache_paths = set()
+_manual_session_cache_lock = threading.Lock()
 
 TTS_MODEL = "gemini-2.5-flash-preview-tts"
 TTS_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{TTS_MODEL}:generateContent"
@@ -49,6 +56,7 @@ TTS_SAMPLE_WIDTH = 2
 TTS_VOICE_NAME = "Kore"
 TTS_STYLE_SHORT = "Read the word clearly in a neutral British English accent for IELTS vocabulary practice."
 TTS_STYLE_LONG = "Read this passage clearly in a natural British English accent for IELTS listening practice."
+GEMINI_RATE_LIMIT_COOLDOWN_SECONDS = 25
 
 
 def _clamp(value, low, high):
@@ -68,11 +76,23 @@ def _safe_name(text, limit=40):
 
 
 def _word_cache_dir(source_path=None):
-    source = str(source_path or "").strip()
-    if source and os.path.isfile(source):
-        base_name = os.path.basename(source)
-        return os.path.join(os.path.dirname(source), f".{base_name}.wordspeaker_audio")
     return GLOBAL_WORD_CACHE_DIR
+
+
+def _legacy_word_cache_path(text, source_path=None):
+    source = str(source_path or "").strip()
+    if not (source and os.path.isfile(source)):
+        return None
+    source_name = os.path.basename(source)
+    legacy_dir = os.path.join(os.path.dirname(source), f".{source_name}.wordspeaker_audio")
+    source_key = get_voice_source()
+    voice_id = get_voice_id()
+    normalized = _normalize_text(text, ensure_sentence_end=False).casefold()
+    key = hashlib.sha1(
+        f"{source_key}|{voice_id}|{TTS_MODEL}|{TTS_VOICE_NAME}|{normalized}".encode("utf-8")
+    ).hexdigest()[:16]
+    name = _safe_name(normalized)
+    return os.path.join(legacy_dir, f"{name}_{key}.wav")
 
 
 def _word_cache_path(text, source_path=None):
@@ -86,6 +106,220 @@ def _word_cache_path(text, source_path=None):
     return os.path.join(_word_cache_dir(source_path), f"{name}_{key}.wav")
 
 
+def _cache_meta_path(cache_path):
+    return f"{cache_path}.json"
+
+
+def _backend_key(source=None, fallback_backend=None):
+    source_name = str(source or "").strip().lower()
+    fallback_name = str(fallback_backend or "").strip().lower()
+    if fallback_name in {"gemini", "kokoro", "piper"}:
+        return fallback_name
+    if source_name == SOURCE_KOKORO:
+        return "kokoro"
+    if source_name == SOURCE_PIPER:
+        return "piper"
+    return "gemini"
+
+
+def _backend_label_from_key(backend_key):
+    backend = str(backend_key or "").strip().lower()
+    if backend == "kokoro":
+        return "Kokoro (Offline)"
+    if backend == "piper":
+        return "Piper (Local)"
+    return "Gemini TTS"
+
+
+def _selected_source_backend_key():
+    return _backend_key(source=get_voice_source())
+
+
+def _actual_backend_key_for_result(*, fallback=False):
+    selected = _selected_source_backend_key()
+    if selected == "gemini" and fallback:
+        return "kokoro"
+    return selected
+
+
+def _load_json_file(path, default):
+    try:
+        with open(path, "r", encoding="utf-8") as fp:
+            data = json.load(fp)
+        if isinstance(default, dict) and isinstance(data, dict):
+            return data
+        if isinstance(default, list) and isinstance(data, list):
+            return data
+    except Exception:
+        pass
+    return default
+
+
+def _write_json_file(path, payload):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fp:
+        json.dump(payload, fp, ensure_ascii=False, indent=2)
+
+
+def _load_cache_metadata(cache_path):
+    data = _load_json_file(_cache_meta_path(cache_path), {})
+    return data if isinstance(data, dict) else {}
+
+
+def _save_cache_metadata(cache_path, metadata):
+    payload = dict(metadata or {})
+    payload["cache_path"] = cache_path
+    _write_json_file(_cache_meta_path(cache_path), payload)
+
+
+def _remove_cache_metadata(cache_path):
+    try:
+        meta_path = _cache_meta_path(cache_path)
+        if os.path.exists(meta_path):
+            os.remove(meta_path)
+    except Exception:
+        pass
+
+
+def _save_pending_gemini_queue_locked():
+    payload = []
+    for cache_path, item in _pending_gemini_replacements.items():
+        if not isinstance(item, dict):
+            continue
+        text = _normalize_text(item.get("text"), ensure_sentence_end=False)
+        if not text:
+            continue
+        payload.append(
+            {
+                "cache_path": cache_path,
+                "text": text,
+                "source_path": str(item.get("source_path") or "").strip() or None,
+                "created_at": item.get("created_at"),
+                "desired_backend": "gemini",
+            }
+        )
+    _write_json_file(PENDING_GEMINI_QUEUE_PATH, payload)
+
+
+def _load_pending_gemini_queue():
+    items = _load_json_file(PENDING_GEMINI_QUEUE_PATH, [])
+    if not isinstance(items, list):
+        return
+    with _pending_gemini_lock:
+        _pending_gemini_replacements.clear()
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            cache_path = str(item.get("cache_path") or "").strip()
+            text = _normalize_text(item.get("text"), ensure_sentence_end=False)
+            if not cache_path or not text:
+                continue
+            _pending_gemini_replacements[cache_path] = {
+                "text": text,
+                "source_path": str(item.get("source_path") or "").strip() or None,
+                "created_at": item.get("created_at"),
+            }
+
+
+def _remove_pending_gemini(cache_path):
+    with _pending_gemini_lock:
+        if cache_path in _pending_gemini_replacements:
+            _pending_gemini_replacements.pop(cache_path, None)
+            _save_pending_gemini_queue_locked()
+
+
+def _enqueue_existing_cache_for_gemini_replacement(text, cache_path, source_path=None):
+    normalized = _normalize_text(text, ensure_sentence_end=False)
+    if not normalized or not cache_path:
+        return
+    with _pending_gemini_lock:
+        _pending_gemini_replacements[cache_path] = {
+            "text": normalized,
+            "source_path": str(source_path or "").strip() or None,
+            "created_at": int(time.time()),
+        }
+        _save_pending_gemini_queue_locked()
+    _start_pending_gemini_worker()
+
+
+def _cache_requires_gemini_replacement(cache_path):
+    metadata = _load_cache_metadata(cache_path)
+    backend = str(metadata.get("backend") or "").strip().lower()
+    desired_backend = str(metadata.get("desired_backend") or "").strip().lower()
+    if backend in {"kokoro", "piper"} and desired_backend == "gemini":
+        return True
+    return not metadata
+
+
+def _save_word_cache_file(cache_path, wav_path, *, source_path=None, backend=None, desired_backend=None):
+    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+    shutil.copyfile(wav_path, cache_path)
+    actual_backend = _backend_key(fallback_backend=backend)
+    wanted_backend = _backend_key(fallback_backend=desired_backend or actual_backend)
+    _save_cache_metadata(
+        cache_path,
+        {
+            "backend": actual_backend,
+            "desired_backend": wanted_backend,
+            "source_path": str(source_path or "").strip() or None,
+            "updated_at": int(os.path.getmtime(cache_path)) if os.path.exists(cache_path) else None,
+        },
+    )
+    if not str(source_path or "").strip():
+        with _manual_session_cache_lock:
+            _manual_session_cache_paths.add(cache_path)
+
+
+def cleanup_manual_session_cache():
+    with _manual_session_cache_lock:
+        paths = list(_manual_session_cache_paths)
+        _manual_session_cache_paths.clear()
+    for path in paths:
+        try:
+            if path and os.path.exists(path):
+                os.remove(path)
+        except Exception:
+            pass
+        _remove_cache_metadata(path)
+        _remove_pending_gemini(path)
+
+
+def cleanup_cache_for_source_path(source_path):
+    target = str(source_path or "").strip()
+    if not target:
+        return 0
+    removed = 0
+    if not os.path.isdir(GLOBAL_WORD_CACHE_DIR):
+        return 0
+    for name in os.listdir(GLOBAL_WORD_CACHE_DIR):
+        if not name.lower().endswith(".wav"):
+            continue
+        cache_path = os.path.join(GLOBAL_WORD_CACHE_DIR, name)
+        metadata = _load_cache_metadata(cache_path)
+        meta_source = str(metadata.get("source_path") or "").strip()
+        if meta_source != target:
+            continue
+        try:
+            if os.path.exists(cache_path):
+                os.remove(cache_path)
+                removed += 1
+        except Exception:
+            pass
+        _remove_cache_metadata(cache_path)
+        _remove_pending_gemini(cache_path)
+    return removed
+
+
+def _is_gemini_rate_limited_error(error):
+    message = str(error or "").lower()
+    return (
+        "rate limit" in message
+        or "resource_exhausted" in message
+        or "429" in message
+        or "quota exceeded" in message
+    )
+
+
 def _clone_to_temp(path):
     fd, temp_path = tempfile.mkstemp(prefix="wordspeaker_", suffix=".wav")
     os.close(fd)
@@ -95,6 +329,29 @@ def _clone_to_temp(path):
 
 def has_cached_word_audio(text, source_path=None):
     return os.path.exists(_word_cache_path(text, source_path=source_path))
+
+
+def get_word_audio_cache_info(text, source_path=None):
+    cache_path = _word_cache_path(text, source_path=source_path)
+    exists = os.path.exists(cache_path)
+    metadata = _load_cache_metadata(cache_path) if exists else {}
+    backend = str(metadata.get("backend") or "").strip().lower()
+    desired_backend = str(metadata.get("desired_backend") or "").strip().lower()
+    pending = False
+    if exists:
+        with _pending_gemini_lock:
+            pending = cache_path in _pending_gemini_replacements
+    return {
+        "exists": exists,
+        "cache_path": cache_path,
+        "meta_path": _cache_meta_path(cache_path),
+        "backend": backend or None,
+        "backend_label": _backend_label_from_key(backend) if backend else "",
+        "desired_backend": desired_backend or None,
+        "desired_backend_label": _backend_label_from_key(desired_backend) if desired_backend else "",
+        "pending_gemini_replacement": bool(pending),
+        "metadata": dict(metadata) if isinstance(metadata, dict) else {},
+    }
 
 
 def _set_backend_status(token, label, *, from_cache=False, fallback=False):
@@ -361,8 +618,36 @@ def _synthesize_to_wav(text, volume, rate_ratio, *, short_text=False, source_pat
     if short_text:
         cache_path = _word_cache_path(text, source_path=source_path)
         if os.path.exists(cache_path):
-            source = get_voice_source()
-            label = "Kokoro (Offline)" if source == SOURCE_KOKORO else "Gemini TTS"
+            metadata = _load_cache_metadata(cache_path)
+            backend_key = str(metadata.get("backend") or "").strip().lower()
+            label = _backend_label_from_key(backend_key or _selected_source_backend_key())
+            if _selected_source_backend_key() == "gemini" and _cache_requires_gemini_replacement(cache_path):
+                _enqueue_existing_cache_for_gemini_replacement(text, cache_path, source_path=source_path)
+            if request_token is not None:
+                _set_backend_status(request_token, label, from_cache=True, fallback=False)
+            return _clone_to_temp(cache_path)
+        legacy_cache_path = _legacy_word_cache_path(text, source_path=source_path)
+        if legacy_cache_path and os.path.exists(legacy_cache_path):
+            try:
+                os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+                shutil.move(legacy_cache_path, cache_path)
+            except Exception:
+                try:
+                    shutil.copyfile(legacy_cache_path, cache_path)
+                except Exception:
+                    cache_path = legacy_cache_path
+            if not _load_cache_metadata(cache_path):
+                _save_cache_metadata(
+                    cache_path,
+                    {
+                        "backend": "unknown",
+                        "desired_backend": _selected_source_backend_key(),
+                        "source_path": str(source_path or "").strip() or None,
+                    },
+                )
+            label = _backend_label_from_key(_selected_source_backend_key())
+            if _selected_source_backend_key() == "gemini":
+                _enqueue_existing_cache_for_gemini_replacement(text, cache_path, source_path=source_path)
             if request_token is not None:
                 _set_backend_status(request_token, label, from_cache=True, fallback=False)
             return _clone_to_temp(cache_path)
@@ -380,11 +665,80 @@ def _synthesize_to_wav(text, volume, rate_ratio, *, short_text=False, source_pat
     if short_text and can_cache:
         try:
             os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-            shutil.copyfile(wav_path, cache_path)
+            actual_backend = _actual_backend_key_for_result(fallback=fallback)
+            desired_backend = _selected_source_backend_key()
+            _save_word_cache_file(
+                cache_path,
+                wav_path,
+                source_path=source_path,
+                backend=actual_backend,
+                desired_backend=desired_backend,
+            )
         except Exception:
             pass
 
     return wav_path
+
+
+def _start_pending_gemini_worker():
+    global _pending_gemini_worker_running
+    with _pending_gemini_lock:
+        if _pending_gemini_worker_running or not _pending_gemini_replacements:
+            return
+        _pending_gemini_worker_running = True
+
+    def _worker():
+        global _pending_gemini_worker_running
+        try:
+            while True:
+                with _pending_gemini_lock:
+                    pending_items = list(_pending_gemini_replacements.items())
+                if not pending_items:
+                    return
+                cache_path_local, item = pending_items[0]
+                if not isinstance(item, dict):
+                    _remove_pending_gemini(cache_path_local)
+                    continue
+                normalized_text = _normalize_text(item.get("text"), ensure_sentence_end=False)
+                source_path = str(item.get("source_path") or "").strip() or None
+                if not normalized_text:
+                    _remove_pending_gemini(cache_path_local)
+                    continue
+                try:
+                    wav_path, _label, _can_cache = _synthesize_with_gemini(
+                        normalized_text,
+                        volume=1.0,
+                        short_text=True,
+                    )
+                    try:
+                        _save_word_cache_file(
+                            cache_path_local,
+                            wav_path,
+                            source_path=source_path,
+                            backend="gemini",
+                            desired_backend="gemini",
+                        )
+                    finally:
+                        try:
+                            os.remove(wav_path)
+                        except Exception:
+                            pass
+                    _remove_pending_gemini(cache_path_local)
+                except Exception as exc:
+                    if _is_gemini_rate_limited_error(exc):
+                        threading.Event().wait(GEMINI_RATE_LIMIT_COOLDOWN_SECONDS)
+                        continue
+                    _remove_pending_gemini(cache_path_local)
+        finally:
+            with _pending_gemini_lock:
+                _pending_gemini_worker_running = False
+        _start_pending_gemini_worker()
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
+def _enqueue_gemini_replacement(text, cache_path, source_path=None):
+    _enqueue_existing_cache_for_gemini_replacement(text, cache_path, source_path=source_path)
 
 
 def stop():
@@ -592,20 +946,75 @@ def precache_word_audio_async(words, source_path=None, rate_ratio=1.0, on_progre
         skipped_count = 0
         error_count = 0
         total_count = len(items)
+        use_kokoro_until_gemini_recovers = False
         for index, text in enumerate(items, start=1):
-            if has_cached_word_audio(text, source_path=source_path):
+            cache_path = _word_cache_path(text, source_path=source_path)
+            if os.path.exists(cache_path):
+                if get_voice_source() == SOURCE_GEMINI and _cache_requires_gemini_replacement(cache_path):
+                    _enqueue_gemini_replacement(text, cache_path, source_path=source_path)
                 skipped_count += 1
                 _emit_progress(index, total_count, text)
                 continue
             try:
-                wav_path = _synthesize_to_wav(
-                    text=text,
-                    volume=1.0,
-                    rate_ratio=rate_ratio,
-                    short_text=True,
-                    source_path=source_path,
-                    request_token=None,
-                )
+                if get_voice_source() == SOURCE_GEMINI and kokoro_ready():
+                    if use_kokoro_until_gemini_recovers:
+                        wav_path, _label, _can_cache = _synthesize_with_kokoro_voice(
+                            text,
+                            volume=1.0,
+                            rate_ratio=rate_ratio,
+                            voice_id="bf_emma",
+                            lang="en-gb",
+                        )
+                        _save_word_cache_file(
+                            cache_path,
+                            wav_path,
+                            source_path=source_path,
+                            backend="kokoro",
+                            desired_backend="gemini",
+                        )
+                        _enqueue_gemini_replacement(text, cache_path, source_path=source_path)
+                    else:
+                        try:
+                            wav_path, _label, _can_cache = _synthesize_with_gemini(
+                                text,
+                                volume=1.0,
+                                short_text=True,
+                            )
+                            _save_word_cache_file(
+                                cache_path,
+                                wav_path,
+                                source_path=source_path,
+                                backend="gemini",
+                                desired_backend="gemini",
+                            )
+                        except Exception as exc:
+                            if not _is_gemini_rate_limited_error(exc):
+                                raise
+                            use_kokoro_until_gemini_recovers = True
+                            wav_path, _label, _can_cache = _synthesize_with_kokoro_voice(
+                                text,
+                                volume=1.0,
+                                rate_ratio=rate_ratio,
+                                voice_id="bf_emma",
+                                lang="en-gb",
+                            )
+                            _save_word_cache_file(
+                                cache_path,
+                                wav_path,
+                                source_path=source_path,
+                                backend="kokoro",
+                                desired_backend="gemini",
+                            )
+                            _enqueue_gemini_replacement(text, cache_path, source_path=source_path)
+                else:
+                    wav_path = _synthesize_to_wav(
+                        text=text,
+                        volume=1.0,
+                        rate_ratio=rate_ratio,
+                        short_text=True,
+                        source_path=source_path,
+                        request_token=None,
+                    )
                 success_count += 1
                 try:
                     os.remove(wav_path)
@@ -630,3 +1039,7 @@ def get_runtime_label():
     if source == SOURCE_PIPER:
         return "Piper (Local)"
     return "Gemini API"
+
+
+_load_pending_gemini_queue()
+_start_pending_gemini_worker()

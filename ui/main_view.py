@@ -11,6 +11,9 @@ from services.tts import (
     speak_async,
     speak_stream_async,
     cancel_all as tts_cancel_all,
+    cleanup_cache_for_source_path as tts_cleanup_cache_for_source_path,
+    cleanup_manual_session_cache as tts_cleanup_manual_session_cache,
+    get_word_audio_cache_info as tts_get_word_audio_cache_info,
     precache_word_audio_async,
     prepare_async as tts_prepare_async,
     get_backend_status as tts_get_backend_status,
@@ -31,8 +34,10 @@ from services.ielts_passage import build_ielts_listening_passage
 from services.app_config import (
     get_gemini_api_key,
     get_generation_model,
+    get_ui_language,
     set_gemini_api_key,
     set_generation_model,
+    set_ui_language,
 )
 from services.gemini_writer import (
     DEFAULT_GEMINI_MODEL,
@@ -58,6 +63,384 @@ from services.corpus_search import (
     search_corpus,
 )
 from services.diff_view import apply_diff
+
+
+UI_TEXTS = {
+    "zh": {
+        "word_list": "单词表",
+        "word_list_desc": "导入词表、直接编辑，然后从当前选中单词开始学习。",
+        "import": "导入",
+        "paste_type": "粘贴 / 输入",
+        "save_as": "另存为",
+        "new_list": "新建词表",
+        "word": "单词",
+        "notes": "备注",
+        "no_words": "还没有单词，先点导入开始。",
+        "play": "▶ 播放",
+        "settings": "设置",
+        "dictation": "听写",
+        "current_word": "当前单词",
+        "speak_word": "朗读单词",
+        "generate_sentence": "生成例句",
+        "find_in_corpus": "语料检索",
+        "edit_pos_translation": "编辑词性 / 中文",
+        "inspect_audio_cache": "查询音频缓存",
+        "review": "复习",
+        "history": "历史",
+        "tools": "工具",
+        "open_history": "打开历史",
+        "delete_history": "从历史中删除",
+        "open_tools": "打开工具",
+        "study_focus": "学习焦点",
+        "no_history": "还没有历史记录。",
+        "learning_tools": "学习工具",
+        "find_corpus_sentences": "语料句子检索",
+        "generate_ielts_passage": "生成 IELTS 篇章",
+        "voice_model_settings": "音源 / 模型设置",
+        "tools_tip": "提示：先选中单词，再生成例句或做定向语料检索。",
+        "settings_title": "设置",
+        "ui_language": "界面语言",
+        "ui_language_restart": "界面语言已保存。重开程序后会完整应用。",
+        "language_zh": "中文",
+        "language_en": "English",
+        "source": "音源",
+        "order": "顺序",
+        "speed": "速度",
+        "volume": "音量",
+        "gemini_api_key": "Gemini API Key",
+        "order_desc": "选择顺序、随机不重复，或点击播放。",
+        "stop_after_list": "播完整个列表后停止",
+        "speed_desc": "间隔：单词与单词之间的时间。",
+        "custom_seconds": "自定义（秒）：",
+        "apply": "应用",
+        "pronunciation_speed": "发音：每个单词的朗读速度。",
+        "volume_desc": "调节播放输出音量。",
+        "settings_toggle_source": "音源",
+        "settings_toggle_order": "顺序",
+        "settings_toggle_speed": "速度",
+        "settings_toggle_volume": "音量",
+        "start_from_word": "从某词开始",
+        "start_learning": "开始学习",
+        "back": "返回",
+        "cancel": "取消",
+        "start_here": "从这里开始",
+        "answer": "答案",
+        "study_mode": "学习模式",
+        "playback_speed": "播放倍速",
+        "feedback": "反馈",
+        "next_word": "下个单词",
+        "pause": "暂停",
+        "replay": "重播",
+        "current_session_accuracy": "本次正确率",
+        "view_wrong_words": "查看错词",
+        "back_to_list": "返回列表",
+        "from_selected_word": "从指定单词开始听写",
+        "part_of_speech": "词性",
+        "chinese_translation": "中文翻译",
+        "save": "保存",
+        "clear": "清空",
+        "close": "关闭",
+        "paste_preview": "粘贴到预览表格",
+        "paste_preview_desc": "可从 Google Docs / Sheets 粘贴两列表格。第 1 列为英文，第 2 列为备注。",
+        "english": "英文",
+        "paste_clipboard": "粘贴剪贴板",
+        "add_row": "添加行",
+        "delete_selected": "删除选中",
+        "replace_list": "替换列表",
+        "append": "追加",
+        "find_desc": "导入 txt/docx/pdf，建立本地句子索引，再按单词或短语搜索。",
+        "search": "搜索",
+        "show": "显示",
+        "results": "条结果",
+        "use_selected_word": "用当前选中词",
+        "import_docs": "导入文档",
+        "sentence": "句子",
+        "preview": "预览",
+        "indexed_documents": "已索引文档",
+        "clear_filter": "清除筛选",
+        "passage_title": "IELTS 听力风格篇章",
+        "passage_desc": "用 Gemini 生成篇章并朗读。如果只想用部分单词，请先在主表里选中。",
+        "generate": "生成",
+        "read_with_gemini": "用 Gemini TTS 朗读",
+        "stop": "停止",
+        "practice": "练习",
+        "check": "检查",
+        "model": "模型：",
+        "practice_tip": "练习：每行按顺序填写一个缺失单词或词组。",
+        "gemini_api_setup": "Gemini API 设置",
+        "gemini_key_desc": "粘贴你自己的 Gemini API Key。程序会先测试，再启用 AI 功能。",
+        "gemini_model_desc": "用于文章生成和例句生成的模型：",
+        "test_and_save": "测试并保存",
+        "exit": "退出",
+        "read_sentence": "朗读句子",
+        "show_word_list": "显示词表",
+        "hide_word_list": "隐藏词表",
+        "mode_settings": "学习模式",
+        "mode_picker_title": "学习模式",
+        "mode_quiz": "测一测",
+        "mode_word_mode": "背词模式",
+        "mode_answer_review": "听写对答案",
+        "mode_online_spelling": "在线拼写",
+        "mode_not_ready": "这个模式下一步再做，当前先完成在线拼写。",
+        "confirm": "确定",
+        "dictation_settings": "模式设置",
+        "previous_word": "上一个",
+        "play_pause": "播放 / 暂停",
+        "no_live_feedback": "拼写中不反馈",
+        "live_feedback": "拼写中反馈",
+        "adaptive_speed": "自适应",
+        "info": "提示",
+        "error": "错误",
+        "save_error": "保存失败",
+        "wrong_words": "错词",
+        "add_wrong_word": "手动添加错词",
+        "wrong_word_added": "已把 {word} 加入错词表。",
+        "delete_history_confirm": "要从历史里删除这个文件记录，并清理对应缓存吗？\n\n{name}",
+        "history_deleted": "已从历史中删除 {name}，并清理 {count} 个缓存文件。",
+        "enter_wrong_word": "输入要加入错词表的单词或词组：",
+        "find_error": "检索错误",
+        "find_setup_error": "检索初始化错误",
+        "import_warning": "导入警告",
+        "gemini_api_key_error": "Gemini API Key 错误",
+        "audio_cache_info_title": "音频缓存信息",
+        "generate_error": "生成错误",
+        "sentence_error": "例句错误",
+        "no_words_to_save": "没有可保存的单词。",
+        "save_failed": "保存词表失败。\n{error}",
+        "import_words_first": "请先导入单词。",
+        "no_words_available": "当前没有可用单词。",
+        "select_word_first": "请先选中一个单词。",
+        "no_words_for_dictation": "当前没有可用于听写的单词。",
+        "no_wrong_words_session": "这次没有错词。",
+        "no_valid_words": "没有找到有效单词。",
+        "word_cannot_be_empty": "单词不能为空。",
+        "file_not_found_moved": "文件不存在或已被移动。",
+        "enter_word_or_phrase": "请先输入要搜索的单词或短语。",
+        "generate_passage_first": "请先生成篇章。",
+        "no_keywords_for_practice": "这篇文章里没有适合做练习的关键词。",
+        "click_practice_first": "请先点击 Practice。",
+        "paste_gemini_key_first": "请先粘贴 Gemini API Key。",
+        "passage_empty": "篇章为空。",
+        "valid_number_needed": "请输入有效数字（>= 0.2）。",
+        "click_word_first_mode": "点击播放模式下，请先点一个单词。",
+        "ui_created_blank_list": "已创建空白词表。可以用“粘贴 / 输入”或添加行开始。",
+        "ui_saved_word_list": "词表已保存到 {name}。",
+        "ui_precache_start": "正在后台为 {count} 个单词准备音频缓存……",
+        "ui_precache_progress": "正在准备音频缓存…… {done}/{total}",
+        "ui_precache_done": "音频预缓存完成：{detail}。",
+        "audio_cache_missing": "这个单词当前还没有缓存音频。",
+        "audio_cache_backend": "当前缓存来源：{backend}",
+        "audio_cache_target": "目标音源：{backend}",
+        "audio_cache_pending": "Gemini 替换状态：等待后台替换",
+        "audio_cache_ready": "Gemini 替换状态：无需替换",
+        "audio_cache_path": "缓存文件：{path}",
+        "audio_cache_meta_path": "元数据文件：{path}",
+        "dictation_recent_hint": "优先复习近期错词。没有错词时会回退到当前词表。",
+        "dictation_all_hint": "全部词表。可以从当前列表任意单词开始。",
+        "dictation_all_start": "从全部词表中指定起点",
+        "dictation_recent_start": "从近期错词中指定起点",
+        "dictation_playing": "听写：正在播放“{word}”。",
+        "dictation_paused": "已暂停。点击播放继续。",
+        "dictation_keep_spelling": "继续拼写……",
+        "dictation_wrong_live": "拼写中反馈：错误",
+        "dictation_correct": "正确",
+        "dictation_wrong_answer": "错误。答案：{word}",
+        "dictation_listen_type": "请听音并拼写单词。",
+        "dictation_session_complete": "本轮结束。",
+        "dictation_recent_title": "近期错词列表",
+        "dictation_empty_recent": "近期还没有错词记录。",
+        "dictation_empty_list": "当前词表为空。",
+        "dictation_scope_all": "当前按钮将作用于“全部”词表。",
+        "dictation_scope_recent": "当前按钮将作用于“近期错词”列表。",
+    },
+    "en": {
+        "word_list": "Word List",
+        "word_list_desc": "Import a list, edit inline, then study from the selected word.",
+        "import": "Import",
+        "paste_type": "Paste / Type",
+        "save_as": "Save As",
+        "new_list": "New List",
+        "word": "Word",
+        "notes": "Notes",
+        "no_words": "No words yet. Click the import button to get started.",
+        "play": "▶ Play",
+        "settings": "Settings",
+        "dictation": "Dictation",
+        "current_word": "Current Word",
+        "speak_word": "Speak Word",
+        "generate_sentence": "Generate Sentence",
+        "find_in_corpus": "Find In Corpus",
+        "edit_pos_translation": "Edit POS / 中文",
+        "inspect_audio_cache": "Inspect Audio Cache",
+        "review": "Review",
+        "history": "History",
+        "tools": "Tools",
+        "open_history": "Open History",
+        "delete_history": "Remove From History",
+        "open_tools": "Open Tools",
+        "study_focus": "Study Focus",
+        "no_history": "No history yet.",
+        "learning_tools": "Learning Tools",
+        "find_corpus_sentences": "Find Corpus Sentences",
+        "generate_ielts_passage": "Generate IELTS Passage",
+        "voice_model_settings": "Voice / Model Settings",
+        "tools_tip": "Tip: select a word first for sentence generation and targeted corpus search.",
+        "settings_title": "Settings",
+        "ui_language": "UI Language",
+        "ui_language_restart": "UI language saved. Restart the app to fully apply it.",
+        "language_zh": "Chinese",
+        "language_en": "English",
+        "source": "Source",
+        "order": "Order",
+        "speed": "Speed",
+        "volume": "Volume",
+        "gemini_api_key": "Gemini API Key",
+        "order_desc": "Choose in-order, random (no repeat), or click-to-play.",
+        "stop_after_list": "Stop after list (no repeat list)",
+        "speed_desc": "Interval: time between words.",
+        "custom_seconds": "Custom (s):",
+        "apply": "Apply",
+        "pronunciation_speed": "Pronunciation: speaking speed for each word.",
+        "volume_desc": "Adjust output volume for playback.",
+        "settings_toggle_source": "Source",
+        "settings_toggle_order": "Order",
+        "settings_toggle_speed": "Speed",
+        "settings_toggle_volume": "Volume",
+        "start_from_word": "Start From Word",
+        "start_learning": "Start Learning",
+        "back": "Back",
+        "cancel": "Cancel",
+        "start_here": "Start Here",
+        "answer": "Answer",
+        "study_mode": "Study Mode",
+        "playback_speed": "Playback Speed",
+        "feedback": "Feedback",
+        "next_word": "Next Word",
+        "pause": "Pause",
+        "replay": "Replay",
+        "current_session_accuracy": "Current session accuracy",
+        "view_wrong_words": "View Wrong Words",
+        "back_to_list": "Back To List",
+        "from_selected_word": "Start Dictation From Selected Word",
+        "part_of_speech": "Part of speech",
+        "chinese_translation": "Chinese translation",
+        "save": "Save",
+        "clear": "Clear",
+        "close": "Close",
+        "paste_preview": "Paste into preview table",
+        "paste_preview_desc": "Paste a two-column table from Google Docs/Sheets. Column 1 = English, Column 2 = Notes.",
+        "english": "English",
+        "paste_clipboard": "Paste Clipboard",
+        "add_row": "Add Row",
+        "delete_selected": "Delete Selected",
+        "replace_list": "Replace List",
+        "append": "Append",
+        "find_desc": "Import txt/docx/pdf files, build a local sentence index, then search by word or phrase.",
+        "search": "Search",
+        "show": "Show",
+        "results": "results",
+        "use_selected_word": "Use Selected Word",
+        "import_docs": "Import Docs",
+        "sentence": "Sentence",
+        "preview": "Preview",
+        "indexed_documents": "Indexed Documents",
+        "clear_filter": "Clear Filter",
+        "passage_title": "IELTS Listening Style Passage",
+        "passage_desc": "Generate with Gemini API and read it with Gemini TTS. Select words in the main table first if you only want part of the list.",
+        "generate": "Generate",
+        "read_with_gemini": "Read with Gemini TTS",
+        "stop": "Stop",
+        "practice": "Practice",
+        "check": "Check",
+        "model": "Model:",
+        "practice_tip": "Practice: fill one missing word/phrase per line (in order).",
+        "gemini_api_setup": "Gemini API setup",
+        "gemini_key_desc": "Paste your own Gemini API key. The app will test it before enabling AI features.",
+        "gemini_model_desc": "Model used for article generation and sentence generation:",
+        "test_and_save": "Test and Save",
+        "exit": "Exit",
+        "read_sentence": "Read Sentence",
+        "show_word_list": "Show Word List",
+        "hide_word_list": "Hide Word List",
+        "mode_settings": "Study Mode",
+        "mode_picker_title": "Study Mode",
+        "mode_quiz": "Quiz",
+        "mode_word_mode": "Word Mode",
+        "mode_answer_review": "Answer Review",
+        "mode_online_spelling": "Online Spelling",
+        "mode_not_ready": "This mode is not implemented yet. Online Spelling is the current working mode.",
+        "confirm": "Confirm",
+        "dictation_settings": "Mode Settings",
+        "previous_word": "Previous",
+        "play_pause": "Play / Pause",
+        "no_live_feedback": "No live feedback",
+        "live_feedback": "Live feedback",
+        "adaptive_speed": "Adaptive",
+        "info": "Info",
+        "error": "Error",
+        "save_error": "Save Error",
+        "wrong_words": "Wrong Words",
+        "add_wrong_word": "Add Wrong Word",
+        "wrong_word_added": "Added {word} to the wrong-word list.",
+        "delete_history_confirm": "Remove this file from history and clear its related cache?\n\n{name}",
+        "history_deleted": "Removed {name} from history and cleared {count} cache files.",
+        "enter_wrong_word": "Enter the word or phrase to add to the wrong-word list:",
+        "find_error": "Find Error",
+        "find_setup_error": "Find Setup Error",
+        "import_warning": "Import Warning",
+        "gemini_api_key_error": "Gemini API Key Error",
+        "audio_cache_info_title": "Audio Cache Info",
+        "generate_error": "Generate Error",
+        "sentence_error": "Sentence Error",
+        "no_words_to_save": "No words to save.",
+        "save_failed": "Failed to save word list.\n{error}",
+        "import_words_first": "Please import words first.",
+        "no_words_available": "No words available.",
+        "select_word_first": "Please select a word first.",
+        "no_words_for_dictation": "No words available for dictation.",
+        "no_wrong_words_session": "No wrong words in this session.",
+        "no_valid_words": "No valid words found.",
+        "word_cannot_be_empty": "Word cannot be empty.",
+        "file_not_found_moved": "File not found or moved.",
+        "enter_word_or_phrase": "Enter a word or phrase first.",
+        "generate_passage_first": "Generate a passage first.",
+        "no_keywords_for_practice": "No suitable keywords found in this passage for practice.",
+        "click_practice_first": "Click Practice first.",
+        "paste_gemini_key_first": "Please paste a Gemini API key first.",
+        "passage_empty": "Passage is empty.",
+        "valid_number_needed": "Please enter a valid number (>=0.2).",
+        "click_word_first_mode": "Click a word first in Click-to-play mode.",
+        "ui_created_blank_list": "Created a new blank list. Use Paste / Type or Add Row to start.",
+        "ui_saved_word_list": "Saved word list to {name}.",
+        "ui_precache_start": "Preparing audio cache for {count} words in the background...",
+        "ui_precache_progress": "Preparing audio cache... {done}/{total}",
+        "ui_precache_done": "Audio pre-cache complete: {detail}.",
+        "audio_cache_missing": "There is no cached audio for this word yet.",
+        "audio_cache_backend": "Current cached backend: {backend}",
+        "audio_cache_target": "Target backend: {backend}",
+        "audio_cache_pending": "Gemini replacement: queued for background replacement",
+        "audio_cache_ready": "Gemini replacement: not needed",
+        "audio_cache_path": "Cache file: {path}",
+        "audio_cache_meta_path": "Metadata file: {path}",
+        "dictation_recent_hint": "Recent wrong words are reviewed first. If there are none, the current list is used.",
+        "dictation_all_hint": "Full word list. You can start from any word in the current list.",
+        "dictation_all_start": "Choose a start point from the full list",
+        "dictation_recent_start": "Choose a start point from recent wrong words",
+        "dictation_playing": "Dictation: playing '{word}'.",
+        "dictation_paused": "Paused. Press Play to continue.",
+        "dictation_keep_spelling": "Keep spelling...",
+        "dictation_wrong_live": "Typing feedback: wrong",
+        "dictation_correct": "Correct",
+        "dictation_wrong_answer": "Wrong. Answer: {word}",
+        "dictation_listen_type": "Listen and type the word.",
+        "dictation_session_complete": "Session complete.",
+        "dictation_recent_title": "Recent mistake list",
+        "dictation_empty_recent": "No recent wrong words yet.",
+        "dictation_empty_list": "Current list is empty.",
+        "dictation_scope_all": "These buttons currently apply to the full word list.",
+        "dictation_scope_recent": "These buttons currently apply to the recent wrong-word list.",
+    },
+}
 
 
 class Tooltip:
@@ -145,6 +528,7 @@ class MainView(ttk.Frame):
         self.word_table = None
         self.word_table_scroll = None
         self.word_context_menu = None
+        self.history_context_menu = None
         self.word_edit_entry = None
         self.word_edit_row = None
         self.word_edit_column = None
@@ -202,6 +586,7 @@ class MainView(ttk.Frame):
         self.find_task_token = 0
         self.find_active_token = 0
         self.audio_precache_token = 0
+        self.ui_language_var = tk.StringVar(value=get_ui_language())
         self.dictation_mode_var = tk.StringVar(value="online_spelling")
         self.dictation_feedback_var = tk.StringVar(value="live")
         self.dictation_speed_var = tk.StringVar(value="1.0")
@@ -220,6 +605,8 @@ class MainView(ttk.Frame):
         self.dictation_session_frame = None
         self.dictation_result_frame = None
         self.dictation_start_word_list = None
+        self.dictation_mode_popup = None
+        self.dictation_mode_buttons = []
         self.dictation_input = None
         self.dictation_result_label = None
         self.dictation_progress = None
@@ -237,8 +624,10 @@ class MainView(ttk.Frame):
         self.right_notebook = None
         self.review_tab = None
         self.check_tab = None
+        self.check_panel = None
         self.history_tab = None
         self.tools_tab = None
+        self.dictation_window = None
         self.detail_word_var = tk.StringVar(value="No word selected")
         self.detail_note_var = tk.StringVar(value="Select a word to see notes and translation.")
         self.detail_translation_var = tk.StringVar(value="")
@@ -280,6 +669,28 @@ class MainView(ttk.Frame):
         self.refresh_gemini_models()
         self.after(150, self.ensure_gemini_api_key)
 
+    def tr(self, key):
+        language = "en" if self.ui_language_var.get() == "en" else "zh"
+        return UI_TEXTS.get(language, UI_TEXTS["zh"]).get(key, key)
+
+    def trf(self, key, **kwargs):
+        try:
+            return self.tr(key).format(**kwargs)
+        except Exception:
+            return self.tr(key)
+
+    def show_info(self, key, **kwargs):
+        messagebox.showinfo(self.tr("info"), self.trf(key, **kwargs))
+
+    def show_error(self, title_key, message_key=None, **kwargs):
+        text = self.trf(message_key or title_key, **kwargs)
+        messagebox.showerror(self.tr(title_key), text)
+
+    def on_ui_language_change(self, _event=None):
+        new_language = "en" if self.ui_language_var.get() == "en" else "zh"
+        set_ui_language(new_language)
+        messagebox.showinfo(self.tr("ui_language"), self.tr("ui_language_restart"))
+
     def build_ui(self):
         header = ttk.Frame(self)
         header.pack(fill=tk.X, pady=(0, 6))
@@ -302,11 +713,11 @@ class MainView(ttk.Frame):
         self.right.grid(row=0, column=2, sticky="nsew")
 
         # Left: Word list + player bar
-        left_title = ttk.Label(self.left, text="Word List", style="Card.TLabel")
+        left_title = ttk.Label(self.left, text=self.tr("word_list"), style="Card.TLabel")
         left_title.grid(row=0, column=0, columnspan=2, padx=12, pady=(12, 2), sticky="w")
         ttk.Label(
             self.left,
-            text="Import a list, edit inline, then study from the selected word.",
+            text=self.tr("word_list_desc"),
             style="Card.TLabel",
             foreground="#667085",
         ).grid(row=1, column=0, columnspan=2, padx=12, pady=(0, 6), sticky="w")
@@ -318,19 +729,19 @@ class MainView(ttk.Frame):
         top_btn_row.grid_columnconfigure(2, weight=1)
         top_btn_row.grid_columnconfigure(3, weight=1)
 
-        btn_load = ttk.Button(top_btn_row, text="Import", style="Primary.TButton", command=self.load_words)
+        btn_load = ttk.Button(top_btn_row, text=self.tr("import"), style="Primary.TButton", command=self.load_words)
         btn_load.grid(row=0, column=0, padx=(0, 6), sticky="ew")
         Tooltip(btn_load, "Import Words")
 
-        btn_manual = ttk.Button(top_btn_row, text="Paste / Type", command=self.open_manual_words_window)
+        btn_manual = ttk.Button(top_btn_row, text=self.tr("paste_type"), command=self.open_manual_words_window)
         btn_manual.grid(row=0, column=1, padx=3, sticky="ew")
         Tooltip(btn_manual, "Type/Paste words or a two-column table")
 
-        self.save_as_btn = ttk.Button(top_btn_row, text="Save As", command=self.save_words_as)
+        self.save_as_btn = ttk.Button(top_btn_row, text=self.tr("save_as"), command=self.save_words_as)
         self.save_as_btn.grid(row=0, column=2, padx=3, sticky="ew")
         Tooltip(self.save_as_btn, "Save the current list to a txt or csv file")
 
-        self.new_list_btn = ttk.Button(top_btn_row, text="New List", command=self.new_blank_list)
+        self.new_list_btn = ttk.Button(top_btn_row, text=self.tr("new_list"), command=self.new_blank_list)
         self.new_list_btn.grid(row=0, column=3, padx=(6, 0), sticky="ew")
         Tooltip(self.new_list_btn, "Create a new empty list")
 
@@ -348,8 +759,8 @@ class MainView(ttk.Frame):
             style="WordList.Treeview",
         )
         self.word_table.heading("idx", text="#")
-        self.word_table.heading("word", text="Word")
-        self.word_table.heading("note", text="Notes")
+        self.word_table.heading("word", text=self.tr("word"))
+        self.word_table.heading("note", text=self.tr("notes"))
         self.word_table.column("idx", width=70, anchor="center", stretch=False)
         self.word_table.column("word", width=500, anchor="w")
         self.word_table.column("note", width=240, anchor="w")
@@ -375,10 +786,11 @@ class MainView(ttk.Frame):
         self.word_context_menu.add_command(label="编辑词性/翻译", command=self.edit_selected_word_meta)
         self.word_context_menu.add_command(label="Find", command=self.search_selected_word_in_corpus)
         self.word_context_menu.add_command(label="造句", command=self.make_sentence_for_selected_word)
+        self.word_context_menu.add_command(label=self.tr("inspect_audio_cache"), command=self.inspect_selected_word_audio_cache)
 
         self.empty_label = ttk.Label(
             self.left,
-            text="No words yet. Click the import button to get started.",
+            text=self.tr("no_words"),
             style="Card.TLabel",
             foreground="#666",
         )
@@ -388,19 +800,25 @@ class MainView(ttk.Frame):
         self.player_frame.grid(row=5, column=0, columnspan=2, padx=12, pady=(4, 6), sticky="ew")
         self.player_frame.grid_columnconfigure(0, weight=1)
         self.player_frame.grid_columnconfigure(1, weight=1)
-        self.player_frame.grid_columnconfigure(2, weight=0)
+        self.player_frame.grid_columnconfigure(2, weight=1)
 
         self.play_btn = ttk.Button(
-            self.player_frame, text="▶ Play", style="Icon.TButton", command=self.toggle_play
+            self.player_frame, text=self.tr("play"), style="Icon.TButton", command=self.toggle_play
         )
         self.play_btn.grid(row=0, column=0, padx=4, sticky="ew")
         Tooltip(self.play_btn, "Start / Pause")
 
         self.settings_btn = ttk.Button(
-            self.player_frame, text="Settings", style="Icon.TButton", command=self.toggle_settings
+            self.player_frame, text=self.tr("settings"), style="Icon.TButton", command=self.toggle_settings
         )
         self.settings_btn.grid(row=0, column=1, padx=4, sticky="ew")
         Tooltip(self.settings_btn, "Settings")
+
+        self.dictation_btn = ttk.Button(
+            self.player_frame, text=self.tr("dictation"), style="Icon.TButton", command=self.open_dictation_window
+        )
+        self.dictation_btn.grid(row=0, column=2, padx=4, sticky="ew")
+        Tooltip(self.dictation_btn, "Open Dictation Window")
 
         self.status_label = ttk.Label(
             self.left, textvariable=self.status_var, style="Card.TLabel", foreground="#444"
@@ -417,7 +835,7 @@ class MainView(ttk.Frame):
         self.detail_card.grid(row=0, column=0, padx=12, pady=(12, 8), sticky="nsew")
         self.detail_card.grid_columnconfigure(0, weight=1)
 
-        ttk.Label(self.detail_card, text="Current Word", style="Card.TLabel").grid(
+        ttk.Label(self.detail_card, text=self.tr("current_word"), style="Card.TLabel").grid(
             row=0, column=0, padx=12, pady=(12, 4), sticky="w"
         )
         ttk.Label(
@@ -455,23 +873,23 @@ class MainView(ttk.Frame):
         detail_actions.grid_columnconfigure(1, weight=1)
         detail_actions.grid_columnconfigure(2, weight=1)
         detail_actions.grid_columnconfigure(3, weight=1)
-        self.detail_speak_btn = ttk.Button(detail_actions, text="Speak Word", command=self.speak_selected)
+        self.detail_speak_btn = ttk.Button(detail_actions, text=self.tr("speak_word"), command=self.speak_selected)
         self.detail_speak_btn.grid(row=0, column=0, padx=(0, 6), sticky="ew")
         self.detail_sentence_btn = ttk.Button(
             detail_actions,
-            text="Generate Sentence",
+            text=self.tr("generate_sentence"),
             command=self.make_sentence_for_selected_word,
         )
         self.detail_sentence_btn.grid(row=0, column=1, padx=3, sticky="ew")
         self.detail_find_btn = ttk.Button(
             detail_actions,
-            text="Find In Corpus",
+            text=self.tr("find_in_corpus"),
             command=self.search_selected_word_in_corpus,
         )
         self.detail_find_btn.grid(row=0, column=2, padx=3, sticky="ew")
         self.detail_edit_btn = ttk.Button(
             detail_actions,
-            text="Edit POS / 中文",
+            text=self.tr("edit_pos_translation"),
             command=self.edit_selected_word_meta,
         )
         self.detail_edit_btn.grid(row=0, column=3, padx=(6, 0), sticky="ew")
@@ -480,19 +898,17 @@ class MainView(ttk.Frame):
         self.right_notebook.grid(row=1, column=0, padx=12, pady=(0, 12), sticky="nsew")
 
         self.review_tab = ttk.Frame(self.right_notebook, style="Card.TFrame")
-        self.check_tab = ttk.Frame(self.right_notebook, style="Card.TFrame")
         self.history_tab = ttk.Frame(self.right_notebook, style="Card.TFrame")
         self.tools_tab = ttk.Frame(self.right_notebook, style="Card.TFrame")
-        self.right_notebook.add(self.review_tab, text="Review")
-        self.right_notebook.add(self.check_tab, text="Dictation")
-        self.right_notebook.add(self.history_tab, text="History")
-        self.right_notebook.add(self.tools_tab, text="Tools")
+        self.right_notebook.add(self.review_tab, text=self.tr("review"))
+        self.right_notebook.add(self.history_tab, text=self.tr("history"))
+        self.right_notebook.add(self.tools_tab, text=self.tr("tools"))
 
         self.review_tab.grid_columnconfigure(0, weight=1)
         review_card = ttk.Frame(self.review_tab, style="Card.TFrame")
         review_card.pack(fill="both", expand=True, padx=10, pady=10)
         review_card.grid_columnconfigure(0, weight=1)
-        ttk.Label(review_card, text="Study Focus", style="Card.TLabel").grid(
+        ttk.Label(review_card, text=self.tr("study_focus"), style="Card.TLabel").grid(
             row=0, column=0, sticky="w"
         )
         ttk.Label(
@@ -525,25 +941,166 @@ class MainView(ttk.Frame):
         review_actions.grid_columnconfigure(1, weight=1)
         self.review_open_source_btn = ttk.Button(
             review_actions,
-            text="Open History",
+            text=self.tr("open_history"),
             command=self.toggle_history,
         )
         self.review_open_source_btn.grid(row=0, column=0, padx=(0, 6), sticky="ew")
         ttk.Button(
             review_actions,
-            text="Open Tools",
+            text=self.tr("open_tools"),
             command=lambda: self._select_sidebar_tab("tools"),
         ).grid(row=0, column=1, padx=(6, 0), sticky="ew")
 
-        # Dictation tab
-        self.check_panel = self.check_tab
+        # History tab
+        self.history_panel = self.history_tab
+
+        hist_title = ttk.Label(self.history_panel, text=self.tr("history"), style="Card.TLabel")
+        hist_title.grid(row=0, column=0, padx=10, pady=(10, 4), sticky="w")
+
+        self.history_list = tk.Listbox(
+            self.history_panel,
+            width=30,
+            height=16,
+            bg="#ffffff",
+            fg="#222222",
+            selectbackground="#cce1ff",
+            selectforeground="#111111",
+            highlightthickness=1,
+            highlightbackground="#d9dbe1",
+        )
+        self.history_list.grid(row=1, column=0, columnspan=2, padx=10, pady=(4, 6))
+        self.history_list.bind("<Double-1>", self.on_history_open)
+        self.history_list.bind("<Button-3>", self.on_history_right_click)
+
+        self.history_context_menu = tk.Menu(self, tearoff=0)
+        self.history_context_menu.add_command(label=self.tr("delete_history"), command=self.delete_selected_history_item)
+
+        self.history_empty = ttk.Label(
+            self.history_panel, text=self.tr("no_history"), style="Card.TLabel", foreground="#666"
+        )
+        self.history_empty.grid(row=2, column=0, columnspan=2, padx=10, pady=(0, 6), sticky="w")
+
+        btn_open = ttk.Button(self.history_panel, text="⭳", command=self.on_history_open)
+        btn_open.grid(row=3, column=0, padx=10, pady=(0, 10), sticky="w")
+        Tooltip(btn_open, "Import Selected")
+
+        self.history_path = ttk.Label(self.history_panel, text="", style="Card.TLabel")
+        self.history_path.grid(row=3, column=1, padx=10, pady=(0, 10), sticky="e")
+
+        # Tools tab
+        self.tools_tab.grid_columnconfigure(0, weight=1)
+        tools_wrap = ttk.Frame(self.tools_tab, style="Card.TFrame")
+        tools_wrap.pack(fill="both", expand=True, padx=10, pady=10)
+        tools_wrap.grid_columnconfigure(0, weight=1)
+        tools_wrap.grid_columnconfigure(1, weight=1)
+        ttk.Label(tools_wrap, text=self.tr("learning_tools"), style="Card.TLabel").grid(
+            row=0, column=0, columnspan=2, sticky="w"
+        )
+        ttk.Label(
+            tools_wrap,
+            textvariable=self.tools_hint_var,
+            style="Card.TLabel",
+            foreground="#667085",
+            wraplength=420,
+            justify="left",
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 10))
+        self.tools_sentence_btn = ttk.Button(
+            tools_wrap,
+            text=self.tr("generate_sentence"),
+            command=self.make_sentence_for_selected_word,
+        )
+        self.tools_sentence_btn.grid(row=2, column=0, padx=(0, 6), pady=4, sticky="ew")
+        self.tools_find_btn = ttk.Button(
+            tools_wrap,
+            text=self.tr("find_corpus_sentences"),
+            command=self.open_find_window,
+        )
+        self.tools_find_btn.grid(row=2, column=1, padx=(6, 0), pady=4, sticky="ew")
+        self.tools_passage_btn = ttk.Button(
+            tools_wrap,
+            text=self.tr("generate_ielts_passage"),
+            command=self.open_passage_window,
+        )
+        self.tools_passage_btn.grid(row=3, column=0, padx=(0, 6), pady=4, sticky="ew")
+        self.tools_settings_btn = ttk.Button(
+            tools_wrap,
+            text=self.tr("voice_model_settings"),
+            command=self.toggle_settings,
+        )
+        self.tools_settings_btn.grid(row=3, column=1, padx=(6, 0), pady=4, sticky="ew")
+
+        ttk.Label(
+            tools_wrap,
+            text=self.tr("tools_tip"),
+            style="Card.TLabel",
+            foreground="#4b5563",
+            wraplength=420,
+            justify="left",
+        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(10, 0))
+
+        self._refresh_selection_details()
+
+    def _select_sidebar_tab(self, name):
+        if not self.right_notebook:
+            return
+        mapping = {
+            "review": self.review_tab,
+            "history": self.history_tab,
+            "tools": self.tools_tab,
+        }
+        target = mapping.get(str(name or "").strip().lower())
+        if target is not None:
+            self.right_notebook.select(target)
+
+    def open_dictation_window(self):
+        if self.dictation_window and self.dictation_window.winfo_exists():
+            self.dictation_window.deiconify()
+            self.dictation_window.lift()
+            self.refresh_dictation_recent_list()
+            return
+
+        self.dictation_window = tk.Toplevel(self)
+        self.dictation_window.title("Dictation")
+        self.dictation_window.configure(bg="#f6f7fb")
+        self.dictation_window.minsize(640, 620)
+        self.dictation_window.geometry("720x700")
+        self.dictation_window.protocol("WM_DELETE_WINDOW", self.close_dictation_window)
+
+        self.check_panel = ttk.Frame(self.dictation_window, style="Card.TFrame")
+        self.check_panel.pack(fill="both", expand=True, padx=12, pady=12)
         self.check_panel.grid_columnconfigure(0, weight=1)
         self.check_panel.grid_rowconfigure(0, weight=1)
-        self.check_panel.grid_columnconfigure(0, weight=1)
+        self._build_dictation_panel(self.check_panel)
+        self.refresh_dictation_recent_list()
+        self._show_dictation_frame(self.dictation_setup_frame)
 
-        self.dictation_setup_frame = ttk.Frame(self.check_panel, style="Card.TFrame")
-        self.dictation_setup_frame.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+    def close_dictation_window(self):
+        self.close_dictation_mode_picker()
+        self._cancel_dictation_timer()
+        self._cancel_dictation_feedback_reset()
+        if self.dictation_window and self.dictation_window.winfo_exists():
+            self.dictation_window.destroy()
+        self.dictation_window = None
+        self.check_panel = None
+        self.dictation_setup_frame = None
+        self.dictation_pick_frame = None
+        self.dictation_session_frame = None
+        self.dictation_result_frame = None
+        self.dictation_recent_list = None
+        self.dictation_start_word_list = None
+        self.dictation_mode_hint_label = None
+        self.dictation_input = None
+        self.dictation_result_label = None
+        self.dictation_progress = None
+        self.play_btn_check = None
+        self.dictation_speed_buttons = []
+        self.dictation_feedback_buttons = []
+
+    def _build_dictation_panel(self, parent):
+        self.dictation_setup_frame = ttk.Frame(parent, style="Card.TFrame")
+        self.dictation_setup_frame.grid(row=0, column=0, sticky="nsew")
         self.dictation_setup_frame.grid_columnconfigure(0, weight=1)
+        self.dictation_setup_frame.grid_rowconfigure(2, weight=1)
         tab_row = ttk.Frame(self.dictation_setup_frame, style="Card.TFrame")
         tab_row.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         tab_row.grid_columnconfigure(0, weight=1)
@@ -566,37 +1123,52 @@ class MainView(ttk.Frame):
             textvariable=self.dictation_status_var,
             style="Card.TLabel",
             foreground="#667085",
-            wraplength=440,
+            wraplength=640,
             justify="left",
         ).grid(row=1, column=0, sticky="w", pady=(0, 8))
 
-        self.dictation_recent_list = tk.Listbox(
-            self.dictation_setup_frame,
-            height=10,
-            bg="#ffffff",
-            fg="#222222",
-            selectbackground="#cce1ff",
-            selectforeground="#111111",
-            highlightthickness=1,
-            highlightbackground="#d9dbe1",
-            activestyle="none",
+        recent_wrap = ttk.Frame(self.dictation_setup_frame, style="Card.TFrame")
+        recent_wrap.grid(row=2, column=0, sticky="nsew")
+        recent_wrap.grid_columnconfigure(0, weight=1)
+        recent_wrap.grid_rowconfigure(0, weight=1)
+        self.dictation_recent_list = ttk.Treeview(
+            recent_wrap,
+            columns=("idx", "word", "meta"),
+            show="headings",
+            selectmode="browse",
+            height=14,
+            style="WordList.Treeview",
         )
-        self.dictation_recent_list.grid(row=2, column=0, sticky="nsew")
-        self.dictation_setup_frame.grid_rowconfigure(2, weight=1)
+        self.dictation_recent_list.heading("idx", text="#")
+        self.dictation_recent_list.heading("word", text=self.tr("word"))
+        self.dictation_recent_list.heading("meta", text=self.tr("notes"))
+        self.dictation_recent_list.column("idx", width=60, anchor="center", stretch=False)
+        self.dictation_recent_list.column("word", width=430, minwidth=240, anchor="w", stretch=True)
+        self.dictation_recent_list.column("meta", width=220, minwidth=120, anchor="w", stretch=True)
+        self.dictation_recent_list.grid(row=0, column=0, sticky="nsew")
+        self.dictation_recent_list.tag_configure("even", background="#ffffff")
+        self.dictation_recent_list.tag_configure("odd", background="#fbfcfe")
+        recent_scroll = ttk.Scrollbar(recent_wrap, orient="vertical", command=self.dictation_recent_list.yview)
+        recent_scroll.grid(row=0, column=1, sticky="ns")
+        self.dictation_recent_list.configure(yscrollcommand=recent_scroll.set)
 
         setup_row = ttk.Frame(self.dictation_setup_frame, style="Card.TFrame")
         setup_row.grid(row=3, column=0, sticky="ew", pady=(10, 0))
         setup_row.grid_columnconfigure(0, weight=1)
         setup_row.grid_columnconfigure(1, weight=1)
-        ttk.Button(setup_row, text="从某词开始", command=self.open_dictation_start_word_picker).grid(
+        setup_row.grid_columnconfigure(2, weight=1)
+        ttk.Button(setup_row, text=self.tr("start_from_word"), command=self.open_dictation_start_word_picker).grid(
             row=0, column=0, padx=(0, 6), sticky="ew"
         )
-        ttk.Button(setup_row, text="开始学习", command=self.open_dictation_mode_picker).grid(
+        ttk.Button(setup_row, text=self.tr("start_learning"), command=self.open_dictation_mode_picker).grid(
             row=0, column=1, padx=(6, 0), sticky="ew"
         )
+        ttk.Button(setup_row, text=self.tr("add_wrong_word"), command=self.add_manual_wrong_word).grid(
+            row=0, column=2, padx=(6, 0), sticky="ew"
+        )
 
-        self.dictation_pick_frame = ttk.Frame(self.check_panel, style="Card.TFrame")
-        self.dictation_pick_frame.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+        self.dictation_pick_frame = ttk.Frame(parent, style="Card.TFrame")
+        self.dictation_pick_frame.grid(row=0, column=0, sticky="nsew")
         self.dictation_pick_frame.grid_remove()
         self.dictation_pick_frame.grid_columnconfigure(0, weight=1)
         self.dictation_pick_frame.grid_rowconfigure(2, weight=1)
@@ -606,7 +1178,7 @@ class MainView(ttk.Frame):
         pick_header.grid_columnconfigure(1, weight=1)
         ttk.Button(
             pick_header,
-            text="返回",
+            text=self.tr("back"),
             command=lambda: self._show_dictation_frame(self.dictation_setup_frame),
         ).grid(row=0, column=0, padx=(0, 8), sticky="w")
         ttk.Label(
@@ -614,27 +1186,34 @@ class MainView(ttk.Frame):
             textvariable=self.dictation_status_var,
             style="Card.TLabel",
             justify="left",
-            wraplength=440,
+            wraplength=640,
         ).grid(row=0, column=1, sticky="w")
-
-        ttk.Label(
-            self.dictation_pick_frame,
-            text="从指定单词开始听写",
-            style="Card.TLabel",
-        ).grid(row=1, column=0, sticky="w", pady=(10, 8))
-
-        self.dictation_start_word_list = tk.Listbox(
-            self.dictation_pick_frame,
-            height=12,
-            bg="#ffffff",
-            fg="#222222",
-            selectbackground="#ffd9f0",
-            selectforeground="#111111",
-            highlightthickness=1,
-            highlightbackground="#d9dbe1",
-            activestyle="none",
+        ttk.Label(self.dictation_pick_frame, text=self.tr("from_selected_word"), style="Card.TLabel").grid(
+            row=1, column=0, sticky="w", pady=(10, 8)
         )
-        self.dictation_start_word_list.grid(row=2, column=0, sticky="nsew")
+
+        pick_wrap = ttk.Frame(self.dictation_pick_frame, style="Card.TFrame")
+        pick_wrap.grid(row=2, column=0, sticky="nsew")
+        pick_wrap.grid_columnconfigure(0, weight=1)
+        pick_wrap.grid_rowconfigure(0, weight=1)
+        self.dictation_start_word_list = ttk.Treeview(
+            pick_wrap,
+            columns=("idx", "word"),
+            show="headings",
+            selectmode="browse",
+            height=14,
+            style="WordList.Treeview",
+        )
+        self.dictation_start_word_list.heading("idx", text="#")
+        self.dictation_start_word_list.heading("word", text=self.tr("word"))
+        self.dictation_start_word_list.column("idx", width=60, anchor="center", stretch=False)
+        self.dictation_start_word_list.column("word", width=560, minwidth=260, anchor="w", stretch=True)
+        self.dictation_start_word_list.grid(row=0, column=0, sticky="nsew")
+        self.dictation_start_word_list.tag_configure("even", background="#ffffff")
+        self.dictation_start_word_list.tag_configure("odd", background="#fbfcfe")
+        pick_scroll = ttk.Scrollbar(pick_wrap, orient="vertical", command=self.dictation_start_word_list.yview)
+        pick_scroll.grid(row=0, column=1, sticky="ns")
+        self.dictation_start_word_list.configure(yscrollcommand=pick_scroll.set)
         self.dictation_start_word_list.bind("<Double-1>", self._on_dictation_start_word_double_click)
 
         pick_actions = ttk.Frame(self.dictation_pick_frame, style="Card.TFrame")
@@ -643,17 +1222,15 @@ class MainView(ttk.Frame):
         pick_actions.grid_columnconfigure(1, weight=1)
         ttk.Button(
             pick_actions,
-            text="取消",
+            text=self.tr("cancel"),
             command=lambda: self._show_dictation_frame(self.dictation_setup_frame),
         ).grid(row=0, column=0, padx=(0, 6), sticky="ew")
-        ttk.Button(
-            pick_actions,
-            text="从这里开始",
-            command=self._confirm_dictation_start_word,
-        ).grid(row=0, column=1, padx=(6, 0), sticky="ew")
+        ttk.Button(pick_actions, text=self.tr("start_here"), command=self._confirm_dictation_start_word).grid(
+            row=0, column=1, padx=(6, 0), sticky="ew"
+        )
 
-        self.dictation_session_frame = ttk.Frame(self.check_panel, style="Card.TFrame")
-        self.dictation_session_frame.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+        self.dictation_session_frame = ttk.Frame(parent, style="Card.TFrame")
+        self.dictation_session_frame.grid(row=0, column=0, sticky="nsew")
         self.dictation_session_frame.grid_remove()
         self.dictation_session_frame.grid_columnconfigure(0, weight=1)
 
@@ -664,12 +1241,9 @@ class MainView(ttk.Frame):
         ttk.Label(session_header, textvariable=self.dictation_progress_var, style="Card.TLabel").grid(
             row=0, column=0, sticky="w"
         )
-        ttk.Label(
-            session_header,
-            text="Answer",
-            style="Card.TLabel",
-            foreground="#667085",
-        ).grid(row=0, column=1, sticky="e")
+        ttk.Label(session_header, text=self.tr("answer"), style="Card.TLabel", foreground="#667085").grid(
+            row=0, column=1, sticky="e"
+        )
 
         self.dictation_progress = ttk.Progressbar(
             self.dictation_session_frame,
@@ -679,53 +1253,8 @@ class MainView(ttk.Frame):
         )
         self.dictation_progress.grid(row=1, column=0, sticky="ew", pady=(8, 10))
 
-        mode_card = ttk.Frame(self.dictation_session_frame, style="Card.TFrame")
-        mode_card.grid(row=2, column=0, sticky="ew")
-        mode_card.grid_columnconfigure(0, weight=1)
-        ttk.Label(mode_card, text="Study Mode", style="Card.TLabel").grid(row=0, column=0, sticky="w")
-        mode_row = ttk.Frame(mode_card, style="Card.TFrame")
-        mode_row.grid(row=1, column=0, sticky="ew", pady=(8, 12))
-        for idx, (label, enabled) in enumerate(
-            (
-                ("Quiz", False),
-                ("Word Mode", False),
-                ("Answer Review", False),
-                ("Online Spelling", True),
-            )
-        ):
-            btn = ttk.Button(
-                mode_row,
-                text=label,
-                state=("normal" if enabled else "disabled"),
-                command=(self.start_online_spelling_session if enabled else None),
-            )
-            btn.grid(row=0, column=idx, padx=(0 if idx == 0 else 6, 0), sticky="ew")
-            mode_row.grid_columnconfigure(idx, weight=1)
-
-        options_card = ttk.Frame(self.dictation_session_frame, style="Card.TFrame")
-        options_card.grid(row=3, column=0, sticky="ew", pady=(6, 10))
-        options_card.grid_columnconfigure(0, weight=1)
-        ttk.Label(options_card, text="Playback Speed", style="Card.TLabel").grid(row=0, column=0, sticky="w")
-        speed_row = ttk.Frame(options_card, style="Card.TFrame")
-        speed_row.grid(row=1, column=0, sticky="w", pady=(6, 10))
-        self.dictation_speed_buttons = []
-        for idx, value in enumerate(("1.0", "1.2", "1.4", "1.6", "adaptive")):
-            text = "Adaptive" if value == "adaptive" else f"x{value}"
-            btn = ttk.Button(speed_row, text=text, command=lambda v=value: self.set_dictation_speed(v))
-            btn.grid(row=0, column=idx, padx=(0 if idx == 0 else 6, 0))
-            self.dictation_speed_buttons.append((value, btn))
-
-        ttk.Label(options_card, text="Feedback", style="Card.TLabel").grid(row=2, column=0, sticky="w")
-        feedback_row = ttk.Frame(options_card, style="Card.TFrame")
-        feedback_row.grid(row=3, column=0, sticky="w", pady=(6, 0))
-        self.dictation_feedback_buttons = []
-        for idx, (value, text) in enumerate((("none", "No live feedback"), ("live", "Live feedback"))):
-            btn = ttk.Button(feedback_row, text=text, command=lambda v=value: self.set_dictation_feedback(v))
-            btn.grid(row=0, column=idx, padx=(0 if idx == 0 else 6, 0))
-            self.dictation_feedback_buttons.append((value, btn))
-
         input_card = ttk.Frame(self.dictation_session_frame, style="Card.TFrame")
-        input_card.grid(row=4, column=0, sticky="ew", pady=(12, 0))
+        input_card.grid(row=2, column=0, sticky="ew", pady=(12, 0))
         input_card.grid_columnconfigure(0, weight=1)
         input_card.grid_columnconfigure(1, weight=0)
         self.dictation_input = tk.Entry(
@@ -739,7 +1268,7 @@ class MainView(ttk.Frame):
         )
         self.dictation_input.grid(row=0, column=0, sticky="ew", padx=(0, 8), ipady=20)
         self.dictation_input.bind("<KeyRelease>", self.on_dictation_input_change)
-        self.dictation_input.bind("<Return>", lambda _e: self.advance_dictation_word())
+        self.dictation_input.bind("<Return>", self.on_dictation_enter)
         ttk.Label(
             input_card,
             textvariable=self.dictation_timer_var,
@@ -754,35 +1283,35 @@ class MainView(ttk.Frame):
             style="Card.TLabel",
             foreground="#667085",
         )
-        self.dictation_result_label.grid(row=5, column=0, sticky="w", pady=(8, 10))
+        self.dictation_result_label.grid(row=3, column=0, sticky="w", pady=(8, 10))
 
         ttk.Button(
             self.dictation_session_frame,
-            text="Next Word",
+            text=self.tr("next_word"),
             style="Primary.TButton",
             command=self.advance_dictation_word,
-        ).grid(row=6, column=0, sticky="ew")
+        ).grid(row=4, column=0, sticky="ew")
 
         control_row = ttk.Frame(self.dictation_session_frame, style="Card.TFrame")
-        control_row.grid(row=7, column=0, sticky="ew", pady=(14, 0))
+        control_row.grid(row=5, column=0, sticky="ew", pady=(14, 0))
         control_row.grid_columnconfigure(0, weight=1)
         control_row.grid_columnconfigure(1, weight=1)
         control_row.grid_columnconfigure(2, weight=1)
         control_row.grid_columnconfigure(3, weight=1)
-        ttk.Button(control_row, text="Hide Word List", command=self.toggle_wordlist_visibility).grid(
+        ttk.Button(control_row, text=self.tr("dictation_settings"), command=lambda: self.open_dictation_mode_picker(auto_start=False)).grid(
             row=0, column=0, padx=(0, 6), sticky="ew"
         )
-        self.play_btn_check = ttk.Button(control_row, text="Play", command=self.play_dictation_current_word)
-        self.play_btn_check.grid(row=0, column=1, padx=3, sticky="ew")
-        ttk.Button(control_row, text="Pause", command=self.pause_dictation_session).grid(
-            row=0, column=2, padx=3, sticky="ew"
+        ttk.Button(control_row, text=self.tr("previous_word"), command=self.previous_dictation_word).grid(
+            row=0, column=1, padx=3, sticky="ew"
         )
-        ttk.Button(control_row, text="Replay", command=self.replay_dictation_word).grid(
+        self.play_btn_check = ttk.Button(control_row, text=self.tr("play"), command=self.toggle_dictation_play_pause)
+        self.play_btn_check.grid(row=0, column=2, padx=3, sticky="ew")
+        ttk.Button(control_row, text=self.tr("replay"), command=self.replay_dictation_word).grid(
             row=0, column=3, padx=(6, 0), sticky="ew"
         )
 
-        self.dictation_result_frame = ttk.Frame(self.check_panel, style="Card.TFrame")
-        self.dictation_result_frame.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+        self.dictation_result_frame = ttk.Frame(parent, style="Card.TFrame")
+        self.dictation_result_frame.grid(row=0, column=0, sticky="nsew")
         self.dictation_result_frame.grid_remove()
         self.dictation_result_frame.grid_columnconfigure(0, weight=1)
         ttk.Label(
@@ -792,120 +1321,18 @@ class MainView(ttk.Frame):
             style="Card.TLabel",
             foreground="#5b5cf0",
         ).grid(row=0, column=0, sticky="n", pady=(40, 10))
-        ttk.Label(
-            self.dictation_result_frame,
-            text="Current session accuracy",
-            style="Card.TLabel",
-        ).grid(row=1, column=0, sticky="n")
+        ttk.Label(self.dictation_result_frame, text=self.tr("current_session_accuracy"), style="Card.TLabel").grid(
+            row=1, column=0, sticky="n"
+        )
         ttk.Button(
             self.dictation_result_frame,
-            text="View Wrong Words",
+            text=self.tr("view_wrong_words"),
             style="Primary.TButton",
             command=self.show_dictation_wrong_words,
         ).grid(row=2, column=0, sticky="ew", padx=80, pady=(30, 10))
-        ttk.Button(
-            self.dictation_result_frame,
-            text="Back To List",
-            command=self.reset_dictation_view,
-        ).grid(row=3, column=0, sticky="ew", padx=80)
-
-        # History tab
-        self.history_panel = self.history_tab
-
-        hist_title = ttk.Label(self.history_panel, text="History", style="Card.TLabel")
-        hist_title.grid(row=0, column=0, padx=10, pady=(10, 4), sticky="w")
-
-        self.history_list = tk.Listbox(
-            self.history_panel,
-            width=30,
-            height=16,
-            bg="#ffffff",
-            fg="#222222",
-            selectbackground="#cce1ff",
-            selectforeground="#111111",
-            highlightthickness=1,
-            highlightbackground="#d9dbe1",
+        ttk.Button(self.dictation_result_frame, text=self.tr("back_to_list"), command=self.reset_dictation_view).grid(
+            row=3, column=0, sticky="ew", padx=80
         )
-        self.history_list.grid(row=1, column=0, columnspan=2, padx=10, pady=(4, 6))
-        self.history_list.bind("<Double-1>", self.on_history_open)
-
-        self.history_empty = ttk.Label(
-            self.history_panel, text="No history yet.", style="Card.TLabel", foreground="#666"
-        )
-        self.history_empty.grid(row=2, column=0, columnspan=2, padx=10, pady=(0, 6), sticky="w")
-
-        btn_open = ttk.Button(self.history_panel, text="⭳", command=self.on_history_open)
-        btn_open.grid(row=3, column=0, padx=10, pady=(0, 10), sticky="w")
-        Tooltip(btn_open, "Import Selected")
-
-        self.history_path = ttk.Label(self.history_panel, text="", style="Card.TLabel")
-        self.history_path.grid(row=3, column=1, padx=10, pady=(0, 10), sticky="e")
-
-        # Tools tab
-        self.tools_tab.grid_columnconfigure(0, weight=1)
-        tools_wrap = ttk.Frame(self.tools_tab, style="Card.TFrame")
-        tools_wrap.pack(fill="both", expand=True, padx=10, pady=10)
-        tools_wrap.grid_columnconfigure(0, weight=1)
-        tools_wrap.grid_columnconfigure(1, weight=1)
-        ttk.Label(tools_wrap, text="Learning Tools", style="Card.TLabel").grid(
-            row=0, column=0, columnspan=2, sticky="w"
-        )
-        ttk.Label(
-            tools_wrap,
-            textvariable=self.tools_hint_var,
-            style="Card.TLabel",
-            foreground="#667085",
-            wraplength=420,
-            justify="left",
-        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 10))
-        self.tools_sentence_btn = ttk.Button(
-            tools_wrap,
-            text="Generate Sentence",
-            command=self.make_sentence_for_selected_word,
-        )
-        self.tools_sentence_btn.grid(row=2, column=0, padx=(0, 6), pady=4, sticky="ew")
-        self.tools_find_btn = ttk.Button(
-            tools_wrap,
-            text="Find Corpus Sentences",
-            command=self.open_find_window,
-        )
-        self.tools_find_btn.grid(row=2, column=1, padx=(6, 0), pady=4, sticky="ew")
-        self.tools_passage_btn = ttk.Button(
-            tools_wrap,
-            text="Generate IELTS Passage",
-            command=self.open_passage_window,
-        )
-        self.tools_passage_btn.grid(row=3, column=0, padx=(0, 6), pady=4, sticky="ew")
-        self.tools_settings_btn = ttk.Button(
-            tools_wrap,
-            text="Voice / Model Settings",
-            command=self.toggle_settings,
-        )
-        self.tools_settings_btn.grid(row=3, column=1, padx=(6, 0), pady=4, sticky="ew")
-
-        ttk.Label(
-            tools_wrap,
-            text="Tip: select a word first for sentence generation and targeted corpus search.",
-            style="Card.TLabel",
-            foreground="#4b5563",
-            wraplength=420,
-            justify="left",
-        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(10, 0))
-
-        self._refresh_selection_details()
-
-    def _select_sidebar_tab(self, name):
-        if not self.right_notebook:
-            return
-        mapping = {
-            "review": self.review_tab,
-            "check": self.check_tab,
-            "history": self.history_tab,
-            "tools": self.tools_tab,
-        }
-        target = mapping.get(str(name or "").strip().lower())
-        if target is not None:
-            self.right_notebook.select(target)
 
     def _has_unsaved_manual_words(self):
         return bool(self.manual_source_dirty and self.store.words and not self.store.has_current_source_file())
@@ -919,7 +1346,9 @@ class MainView(ttk.Frame):
             return True
         answer = messagebox.askyesnocancel(
             title,
-            "This pasted word list has not been saved yet.\nDo you want to save it first?",
+            "This pasted word list has not been saved yet.\nDo you want to save it first?"
+            if self.ui_language_var.get() == "en"
+            else "这份粘贴的词表还没有保存。\n要先保存吗？",
         )
         if answer is None:
             return False
@@ -937,12 +1366,12 @@ class MainView(ttk.Frame):
         self.manual_source_dirty = True
         self.render_words([])
         self.reset_playback_state()
-        self.status_var.set("Created a new blank list. Use Paste / Type or Add Row to start.")
+        self.status_var.set(self.tr("ui_created_blank_list"))
         self._refresh_selection_details()
 
     def save_words_as(self):
         if not self.store.words:
-            messagebox.showinfo("Info", "No words to save.")
+            self.show_info("no_words_to_save")
             return False
         current_source = self.store.get_current_source_path()
         initial_name = os.path.basename(current_source) if current_source else "word_list.csv"
@@ -962,16 +1391,18 @@ class MainView(ttk.Frame):
             self.store.add_history(path)
             self.refresh_history()
             self.manual_source_dirty = False
-            self.status_var.set(f"Saved word list to {os.path.basename(path)}.")
+            self.status_var.set(self.trf("ui_saved_word_list", name=os.path.basename(path)))
             self._refresh_selection_details()
             return True
         except Exception as e:
-            messagebox.showerror("Save Error", f"Failed to save word list.\n{e}")
+            self.show_error("save_error", "save_failed", error=e)
             return False
 
     def on_main_window_close(self):
         if not self._prompt_save_unsaved_manual_words():
             return
+        if not self.store.has_current_source_file():
+            tts_cleanup_manual_session_cache()
         try:
             self.winfo_toplevel().destroy()
         except Exception:
@@ -1057,6 +1488,33 @@ class MainView(ttk.Frame):
         display_text = f"{word}\n{self._format_word_subline(word)}"
         return (f"{idx + 1}.", display_text, note_value)
 
+    def _build_dictation_table_values(self, idx, item):
+        word = str(item.get("word") or "").strip()
+        subtitle = self._format_word_subline(word)
+        note_value = ""
+        try:
+            note_index = self.store.words.index(word)
+        except ValueError:
+            note_index = -1
+        if 0 <= note_index < len(self.store.notes):
+            note_value = str(self.store.notes[note_index] or "").strip()
+        if self.dictation_list_mode_var.get() == "recent":
+            wrong_count = int(item.get("wrong_count", 0) or 0)
+            wrong_input = str(item.get("last_wrong_input") or "").strip()
+            wrong_type = str(item.get("last_wrong_type") or "").strip()
+            if wrong_count:
+                subtitle = f"{subtitle}  |  错过{wrong_count}次"
+            note_parts = []
+            if wrong_type:
+                note_parts.append(wrong_type)
+            if wrong_input:
+                note_parts.append(f"错写: {wrong_input}")
+            note_value = " | ".join(note_parts)
+        else:
+            if item.get("wrong_count"):
+                subtitle = f"{subtitle}  |  错过{int(item.get('wrong_count', 0) or 0)}次"
+        return (f"{idx + 1}.", f"{word}\n{subtitle}", note_value)
+
     def _start_analysis_job(self, words, token):
         if not words:
             return
@@ -1088,7 +1546,7 @@ class MainView(ttk.Frame):
         token = self.audio_precache_token
         source_path = self.store.get_current_source_path()
         total_words = len({str(word or "").strip().casefold() for word in words if str(word or "").strip()})
-        self.status_var.set(f"Preparing audio cache for {total_words} words in the background...")
+        self.status_var.set(self.trf("ui_precache_start", count=total_words))
 
         def _on_progress(done_count, total_count, _current_text):
             if token != self.audio_precache_token:
@@ -1119,7 +1577,7 @@ class MainView(ttk.Frame):
     def _update_audio_precache_progress(self, token, done_count, total_count):
         if token != self.audio_precache_token:
             return
-        self.status_var.set(f"Preparing audio cache... {done_count}/{total_count}")
+        self.status_var.set(self.trf("ui_precache_progress", done=done_count, total=total_count))
 
     def _finish_audio_precache(self, token, success_count, skipped_count, error_count):
         if token != self.audio_precache_token:
@@ -1132,7 +1590,7 @@ class MainView(ttk.Frame):
         if error_count:
             parts.append(f"{error_count} failed")
         detail = ", ".join(parts) if parts else "nothing to do"
-        self.status_var.set(f"Audio pre-cache complete: {detail}.")
+        self.status_var.set(self.trf("ui_precache_done", detail=detail))
 
     def refresh_dictation_recent_list(self):
         if not self.dictation_recent_list:
@@ -1151,32 +1609,25 @@ class MainView(ttk.Frame):
         self.dictation_recent_items = self.store.recent_wrong_words(self.store.words, limit=100)
         self.dictation_all_tab_var.set(f"全部({len(self.dictation_all_items)})")
         self.dictation_recent_tab_var.set(f"近期错词({len(self.dictation_recent_items)})")
-        self.dictation_recent_list.delete(0, tk.END)
+        self.dictation_recent_list.delete(*self.dictation_recent_list.get_children())
         items = self._get_dictation_source_items()
         if items:
             for idx, item in enumerate(items, start=1):
-                word = item.get("word") or ""
-                subtitle = self._format_word_subline(word)
-                if self.dictation_list_mode_var.get() == "recent":
-                    wrong_input = str(item.get("last_wrong_input") or "").strip()
-                    right_part = f"  |  错过{int(item.get('wrong_count', 0) or 0)}次"
-                    if wrong_input:
-                        label = f"{idx}. {word}  {wrong_input}{right_part}\n{subtitle}"
-                    else:
-                        label = f"{idx}. {word}{right_part}\n{subtitle}"
-                else:
-                    label = f"{idx}. {word}\n{subtitle}"
-                self.dictation_recent_list.insert(tk.END, label)
-            self.dictation_recent_list.selection_clear(0, tk.END)
-            self.dictation_recent_list.selection_set(0)
-            self.dictation_recent_list.activate(0)
+                tag = "even" if (idx - 1) % 2 == 0 else "odd"
+                self.dictation_recent_list.insert(
+                    "",
+                    tk.END,
+                    iid=str(idx - 1),
+                    values=self._build_dictation_table_values(idx - 1, item),
+                    tags=(tag,),
+                )
+            self.dictation_recent_list.selection_set("0")
+            self.dictation_recent_list.focus("0")
         else:
-            if self.dictation_list_mode_var.get() == "recent" and self.store.words:
-                self.dictation_recent_list.insert(tk.END, "近期还没有错词记录。")
-            elif self.store.words:
-                self.dictation_recent_list.insert(tk.END, "当前词表为空。")
-            else:
-                self.dictation_recent_list.insert(tk.END, "Import words first.")
+            empty_text = self.tr("dictation_empty_recent") if self.dictation_list_mode_var.get() == "recent" and self.store.words else (
+                self.tr("dictation_empty_list") if self.store.words else self.tr("import_words_first")
+            )
+            self.dictation_recent_list.insert("", tk.END, iid="empty", values=("", empty_text, ""))
         self.set_dictation_list_mode(self.dictation_list_mode_var.get(), refresh=False)
 
     def _get_dictation_source_items(self):
@@ -1195,10 +1646,12 @@ class MainView(ttk.Frame):
             self.dictation_recent_tab_btn.config(
                 style="SelectedSpeed.TButton" if target == "recent" else "Speed.TButton"
             )
+        if self.dictation_recent_list:
+            self.dictation_recent_list.heading("meta", text=("错因" if target == "recent" else self.tr("notes")))
         if target == "recent":
-            self.dictation_status_var.set("近期错词优先复习。没有错词时会回退到当前词表。")
+            self.dictation_status_var.set(self.tr("dictation_recent_hint"))
         else:
-            self.dictation_status_var.set("全部词表。可以从当前列表任意单词开始。")
+            self.dictation_status_var.set(self.tr("dictation_all_hint"))
         if refresh:
             self.refresh_dictation_recent_list()
 
@@ -1216,32 +1669,148 @@ class MainView(ttk.Frame):
             else:
                 frame.grid_remove()
 
-    def open_dictation_mode_picker(self):
+    def open_dictation_mode_picker(self, auto_start=True):
         if not self.store.words:
-            messagebox.showinfo("Info", "Import words first.")
+            self.show_info("import_words_first")
             return
-        self._show_dictation_frame(self.dictation_session_frame)
+        if self.dictation_mode_popup and self.dictation_mode_popup.winfo_exists():
+            self.dictation_mode_popup.lift()
+            return
+
+        parent = self.dictation_window if self.dictation_window and self.dictation_window.winfo_exists() else self
+        win = tk.Toplevel(parent)
+        self.dictation_mode_popup = win
+        win.title(self.tr("mode_picker_title"))
+        win.configure(bg="#f6f7fb")
+        win.resizable(False, False)
+        win.transient(parent)
+        win.grab_set()
+
+        wrap = ttk.Frame(win, style="Card.TFrame")
+        wrap.pack(fill="both", expand=True, padx=12, pady=12)
+        wrap.grid_columnconfigure(0, weight=1)
+
+        ttk.Label(wrap, text=self.tr("mode_picker_title"), style="Card.TLabel").grid(row=0, column=0, sticky="w")
+
+        mode_row = ttk.Frame(wrap, style="Card.TFrame")
+        mode_row.grid(row=1, column=0, sticky="ew", pady=(10, 12))
+        self.dictation_mode_buttons = []
+        for idx, (value, label_key) in enumerate(
+            (
+                ("quiz", "mode_quiz"),
+                ("word_mode", "mode_word_mode"),
+                ("answer_review", "mode_answer_review"),
+                ("online_spelling", "mode_online_spelling"),
+            )
+        ):
+            btn = ttk.Button(mode_row, text=self.tr(label_key), command=lambda v=value: self.set_dictation_mode(v))
+            btn.grid(row=0, column=idx, padx=(0 if idx == 0 else 6, 0), sticky="ew")
+            mode_row.grid_columnconfigure(idx, weight=1)
+            self.dictation_mode_buttons.append((value, btn))
+
+        options_card = ttk.Frame(wrap, style="Card.TFrame")
+        options_card.grid(row=2, column=0, sticky="ew")
+        options_card.grid_columnconfigure(0, weight=1)
+
+        ttk.Label(options_card, text=self.tr("playback_speed"), style="Card.TLabel").grid(row=0, column=0, sticky="w")
+        speed_row = ttk.Frame(options_card, style="Card.TFrame")
+        speed_row.grid(row=1, column=0, sticky="w", pady=(6, 10))
+        self.dictation_speed_buttons = []
+        for idx, value in enumerate(("1.0", "1.2", "1.4", "1.6", "adaptive")):
+            text = self.tr("adaptive_speed") if value == "adaptive" else f"x{value}"
+            btn = ttk.Button(speed_row, text=text, command=lambda v=value: self.set_dictation_speed(v))
+            btn.grid(row=0, column=idx, padx=(0 if idx == 0 else 6, 0))
+            self.dictation_speed_buttons.append((value, btn))
+
+        ttk.Label(options_card, text=self.tr("feedback"), style="Card.TLabel").grid(row=2, column=0, sticky="w")
+        feedback_row = ttk.Frame(options_card, style="Card.TFrame")
+        feedback_row.grid(row=3, column=0, sticky="w", pady=(6, 0))
+        self.dictation_feedback_buttons = []
+        for idx, (value, text_key) in enumerate((("none", "no_live_feedback"), ("live", "live_feedback"))):
+            btn = ttk.Button(feedback_row, text=self.tr(text_key), command=lambda v=value: self.set_dictation_feedback(v))
+            btn.grid(row=0, column=idx, padx=(0 if idx == 0 else 6, 0))
+            self.dictation_feedback_buttons.append((value, btn))
+
+        self.dictation_mode_hint_label = ttk.Label(
+            wrap,
+            text="",
+            style="Card.TLabel",
+            foreground="#667085",
+            wraplength=420,
+            justify="left",
+        )
+        self.dictation_mode_hint_label.grid(row=3, column=0, sticky="w", pady=(10, 0))
+
+        btn_row = ttk.Frame(wrap, style="Card.TFrame")
+        btn_row.grid(row=4, column=0, sticky="ew", pady=(14, 0))
+        btn_row.grid_columnconfigure(0, weight=1)
+        btn_row.grid_columnconfigure(1, weight=1)
+        ttk.Button(btn_row, text=self.tr("cancel"), command=self.close_dictation_mode_picker).grid(
+            row=0, column=0, padx=(0, 6), sticky="ew"
+        )
+        ttk.Button(
+            btn_row,
+            text=self.tr("confirm"),
+            style="Primary.TButton",
+            command=lambda a=auto_start: self.confirm_dictation_mode_picker(auto_start=a),
+        ).grid(row=0, column=1, padx=(6, 0), sticky="ew")
+
+        self.set_dictation_mode(self.dictation_mode_var.get())
         self.set_dictation_speed(self.dictation_speed_var.get())
         self.set_dictation_feedback(self.dictation_feedback_var.get())
-        self.start_online_spelling_session()
+
+    def close_dictation_mode_picker(self):
+        if self.dictation_mode_popup and self.dictation_mode_popup.winfo_exists():
+            try:
+                self.dictation_mode_popup.grab_release()
+            except Exception:
+                pass
+            self.dictation_mode_popup.destroy()
+        self.dictation_mode_popup = None
+
+    def set_dictation_mode(self, mode):
+        selected = str(mode or "online_spelling").strip().lower()
+        self.dictation_mode_var.set(selected)
+        for value, btn in getattr(self, "dictation_mode_buttons", []):
+            btn.config(style="SelectedSpeed.TButton" if value == selected else "Speed.TButton")
+        hint = ""
+        if selected != "online_spelling":
+            hint = self.tr("mode_not_ready")
+        if getattr(self, "dictation_mode_hint_label", None):
+            self.dictation_mode_hint_label.config(text=hint)
+
+    def confirm_dictation_mode_picker(self, auto_start=True):
+        selected = self.dictation_mode_var.get()
+        if selected != "online_spelling":
+            self.set_dictation_mode("online_spelling")
+        self.close_dictation_mode_picker()
+        if auto_start:
+            self._show_dictation_frame(self.dictation_session_frame)
+            self.start_online_spelling_session()
 
     def open_dictation_start_word_picker(self):
         items = self._get_dictation_source_items()
         if not items:
-            messagebox.showinfo("Info", "No words available.")
+            self.show_info("no_words_available")
             return
-        title_text = "从全部词表中指定起点" if self.dictation_list_mode_var.get() == "all" else "从近期错词中指定起点"
+        title_text = self.tr("dictation_all_start") if self.dictation_list_mode_var.get() == "all" else self.tr("dictation_recent_start")
         self.dictation_status_var.set(title_text)
         if not self.dictation_start_word_list:
             return
-        self.dictation_start_word_list.delete(0, tk.END)
+        self.dictation_start_word_list.delete(*self.dictation_start_word_list.get_children())
         for idx, item in enumerate(items, start=1):
             word = item.get("word") or ""
             detail = self._format_word_subline(word)
-            self.dictation_start_word_list.insert(tk.END, f"{idx}. {word}\n{detail}")
-        self.dictation_start_word_list.selection_clear(0, tk.END)
-        self.dictation_start_word_list.selection_set(0)
-        self.dictation_start_word_list.activate(0)
+            tag = "even" if (idx - 1) % 2 == 0 else "odd"
+            self.dictation_start_word_list.insert(
+                "",
+                tk.END,
+                iid=str(idx - 1),
+                values=(f"{idx}.", f"{word}\n{detail}"),
+                tags=(tag,),
+            )
+        self.dictation_start_word_list.selection_set("0")
+        self.dictation_start_word_list.focus("0")
         self._show_dictation_frame(self.dictation_pick_frame)
 
     def _on_dictation_start_word_double_click(self, _event=None):
@@ -1250,9 +1819,9 @@ class MainView(ttk.Frame):
     def _confirm_dictation_start_word(self):
         if not self.dictation_start_word_list:
             return
-        selection = self.dictation_start_word_list.curselection()
+        selection = self.dictation_start_word_list.selection()
         if not selection:
-            messagebox.showinfo("Info", "Please select a word first.")
+            self.show_info("select_word_first")
             return
         try:
             start_index = int(selection[0])
@@ -1308,7 +1877,7 @@ class MainView(ttk.Frame):
     def start_online_spelling_session(self, start_index=0):
         self.dictation_pool = self._get_dictation_pool()
         if not self.dictation_pool:
-            messagebox.showinfo("Info", "No words available for dictation.")
+            self.show_info("no_words_for_dictation")
             self.reset_dictation_view()
             return
         safe_start = max(0, min(int(start_index or 0), max(0, len(self.dictation_pool) - 1)))
@@ -1322,6 +1891,7 @@ class MainView(ttk.Frame):
         self.dictation_running = True
         self.dictation_paused = False
         self.dictation_summary_var.set("")
+        self.update_dictation_play_button()
         self._show_dictation_frame(self.dictation_session_frame)
         self.advance_dictation_word(initial=True)
 
@@ -1329,7 +1899,8 @@ class MainView(ttk.Frame):
         if not self.dictation_running or not self.dictation_current_word:
             return
         self.dictation_paused = False
-        self.status_var.set(f"Dictation: playing '{self.dictation_current_word}'.")
+        self.update_dictation_play_button()
+        self.status_var.set(self.trf("dictation_playing", word=self.dictation_current_word))
         speak_async(
             self.dictation_current_word,
             self.volume_var.get() / 100.0,
@@ -1338,17 +1909,59 @@ class MainView(ttk.Frame):
             source_path=self.store.get_current_source_path(),
         )
         self._restart_dictation_timer()
+        self._focus_dictation_input()
 
     def replay_dictation_word(self):
         if not self.dictation_current_word:
             return
         self.play_dictation_current_word()
 
+    def toggle_dictation_play_pause(self):
+        if not self.dictation_running or not self.dictation_current_word:
+            return
+        if self.dictation_paused:
+            self.play_dictation_current_word()
+        else:
+            self.pause_dictation_session()
+
     def pause_dictation_session(self):
         self.dictation_paused = True
         tts_cancel_all()
         self._cancel_dictation_timer()
-        self.dictation_status_var.set("Paused. Press Play to continue.")
+        self.update_dictation_play_button()
+        self.dictation_status_var.set(self.tr("dictation_paused"))
+        self._focus_dictation_input()
+
+    def update_dictation_play_button(self):
+        if not self.play_btn_check:
+            return
+        if self.dictation_running and not self.dictation_paused:
+            self.play_btn_check.config(text=f"⏸ {self.tr('pause')}")
+        else:
+            self.play_btn_check.config(text=self.tr("play"))
+
+    def previous_dictation_word(self):
+        if not self.dictation_running or not self.dictation_pool:
+            return
+        self._cancel_dictation_feedback_reset()
+        self._cancel_dictation_timer()
+        tts_cancel_all()
+        self.dictation_paused = False
+        self.dictation_index = max(-1, self.dictation_index - 2)
+        self.advance_dictation_word(initial=True)
+
+    def _focus_dictation_input(self):
+        if not self.dictation_input:
+            return
+        try:
+            self.dictation_input.focus_force()
+            self.dictation_input.icursor(tk.END)
+        except Exception:
+            try:
+                self.dictation_input.focus_set()
+                self.dictation_input.icursor(tk.END)
+            except Exception:
+                pass
 
     def _restart_dictation_timer(self):
         self._cancel_dictation_timer()
@@ -1389,10 +2002,18 @@ class MainView(ttk.Frame):
             return
         if target_key.startswith(value_key):
             self._set_dictation_input_color("neutral")
-            self.dictation_status_var.set("Keep spelling...")
+            self.dictation_status_var.set(self.tr("dictation_keep_spelling"))
             return
         self._set_dictation_input_color("wrong")
-        self.dictation_status_var.set("Typing feedback: wrong")
+        self.dictation_status_var.set(self.tr("dictation_wrong_live"))
+
+    def on_dictation_enter(self, _event=None):
+        if not self.dictation_running or not self.dictation_current_word:
+            return "break"
+        if self.dictation_feedback_after or self.dictation_answer_revealed:
+            return "break"
+        self.finalize_dictation_attempt(trigger="manual")
+        return "break"
 
     def finalize_dictation_attempt(self, trigger="manual"):
         if not self.dictation_running or self.dictation_answer_revealed or not self.dictation_current_word:
@@ -1406,12 +2027,12 @@ class MainView(ttk.Frame):
         if is_correct:
             self.dictation_correct_count += 1
             self._set_dictation_input_color("correct")
-            self.dictation_status_var.set("Correct")
+            self.dictation_status_var.set(self.tr("dictation_correct"))
         else:
             self._set_dictation_input_color("wrong")
-            self.dictation_status_var.set(f"Wrong. Answer: {target}")
+            self.dictation_status_var.set(self.trf("dictation_wrong_answer", word=target))
             self.dictation_wrong_items.append({"word": target, "input": user_text})
-        delay = 650 if trigger == "input" and is_correct else 900
+        delay = 1150 if trigger == "input" and is_correct else 1450
         self._cancel_dictation_feedback_reset()
         self.dictation_feedback_after = self.after(delay, self._go_to_next_dictation_word)
 
@@ -1439,12 +2060,13 @@ class MainView(ttk.Frame):
         progress_text = f"Spelling ({self.dictation_index + 1}/{total})"
         self.dictation_progress_var.set(progress_text)
         self.dictation_progress["value"] = ((self.dictation_index + 1) / max(1, total)) * 100.0
-        self.dictation_status_var.set("Listen and type the word.")
+        self.dictation_status_var.set(self.tr("dictation_listen_type"))
         self.dictation_timer_var.set(f"{self._dictation_seconds_for_speed()}s" if self._dictation_seconds_for_speed() else "manual")
         if self.dictation_input:
             self.dictation_input.delete(0, tk.END)
             self.dictation_input.focus_set()
         self._set_dictation_input_color("neutral")
+        self.update_dictation_play_button()
         self.play_dictation_current_word()
 
     def finish_dictation_session(self):
@@ -1452,10 +2074,11 @@ class MainView(ttk.Frame):
         self.dictation_paused = False
         self._cancel_dictation_timer()
         self._cancel_dictation_feedback_reset()
+        self.update_dictation_play_button()
         total = len(self.dictation_pool)
         accuracy = (self.dictation_correct_count / float(total)) * 100.0 if total else 0.0
         self.dictation_summary_var.set(f"{accuracy:.2f}%")
-        self.dictation_status_var.set("Session complete.")
+        self.dictation_status_var.set(self.tr("dictation_session_complete"))
         self.refresh_dictation_recent_list()
         self._show_dictation_frame(self.dictation_result_frame)
 
@@ -1467,9 +2090,10 @@ class MainView(ttk.Frame):
         self.dictation_current_word = ""
         self._cancel_dictation_timer()
         self._cancel_dictation_feedback_reset()
+        self.update_dictation_play_button()
         self.dictation_progress_var.set("Spelling (0/0)")
         self.dictation_timer_var.set("5s")
-        self.dictation_status_var.set("Recent mistake list")
+        self.dictation_status_var.set(self.tr("dictation_recent_title"))
         self.dictation_progress["value"] = 0
         if self.dictation_input:
             self.dictation_input.delete(0, tk.END)
@@ -1479,12 +2103,41 @@ class MainView(ttk.Frame):
 
     def show_dictation_wrong_words(self):
         if not self.dictation_wrong_items:
-            messagebox.showinfo("Wrong Words", "No wrong words in this session.")
+            self.show_info("no_wrong_words_session")
             return
         lines = []
         for item in self.dictation_wrong_items:
             lines.append(f"{item['word']}    <-    {item.get('input') or '(blank)'}")
-        messagebox.showinfo("Wrong Words", "\n".join(lines[:40]))
+        messagebox.showinfo(self.tr("wrong_words"), "\n".join(lines[:40]))
+
+    def inspect_selected_word_audio_cache(self):
+        selected_idx = self._get_selected_index()
+        if selected_idx is None or selected_idx >= len(self.store.words):
+            self.show_info("select_word_first")
+            return
+        word = self.store.words[selected_idx]
+        source_path = self.store.get_current_source_path()
+        info = tts_get_word_audio_cache_info(word, source_path=source_path)
+        if not info.get("exists"):
+            messagebox.showinfo(
+                self.tr("audio_cache_info_title"),
+                self.tr("audio_cache_missing"),
+            )
+            return
+
+        backend_label = info.get("backend_label") or (info.get("backend") or "Unknown")
+        desired_label = info.get("desired_backend_label") or backend_label
+        lines = [
+            f"Word: {word}",
+            self.trf("audio_cache_backend", backend=backend_label),
+            self.trf("audio_cache_target", backend=desired_label),
+            self.tr("audio_cache_pending") if info.get("pending_gemini_replacement") else self.tr("audio_cache_ready"),
+            self.trf("audio_cache_path", path=info.get("cache_path") or ""),
+        ]
+        meta_path = str(info.get("meta_path") or "").strip()
+        if meta_path:
+            lines.append(self.trf("audio_cache_meta_path", path=meta_path))
+        messagebox.showinfo(self.tr("audio_cache_info_title"), "\n".join(lines))
 
     def edit_selected_word_meta(self):
         selected_idx = self._get_selected_index()
@@ -1505,19 +2158,21 @@ class MainView(ttk.Frame):
         ttk.Label(wrap, text=f"Word: {word}", style="Card.TLabel").pack(anchor="w")
         ttk.Label(
             wrap,
-            text="Change the displayed part of speech and Chinese translation for this word.",
+            text="Change the displayed part of speech and Chinese translation for this word."
+            if self.ui_language_var.get() == "en"
+            else "修改这个单词显示出来的词性和中文翻译。",
             style="Card.TLabel",
             foreground="#666",
             wraplength=420,
             justify="left",
         ).pack(anchor="w", pady=(0, 8))
 
-        ttk.Label(wrap, text="Part of speech", style="Card.TLabel").pack(anchor="w")
+        ttk.Label(wrap, text=self.tr("part_of_speech"), style="Card.TLabel").pack(anchor="w")
         pos_var = tk.StringVar(value=current_pos)
         pos_entry = ttk.Entry(wrap, textvariable=pos_var, width=30)
         pos_entry.pack(anchor="w", fill="x", pady=(2, 8))
 
-        ttk.Label(wrap, text="Chinese translation", style="Card.TLabel").pack(anchor="w")
+        ttk.Label(wrap, text=self.tr("chinese_translation"), style="Card.TLabel").pack(anchor="w")
         zh_var = tk.StringVar(value=current_zh)
         zh_entry = ttk.Entry(wrap, textvariable=zh_var, width=40)
         zh_entry.pack(anchor="w", fill="x", pady=(2, 10))
@@ -1541,9 +2196,9 @@ class MainView(ttk.Frame):
             self._refresh_selection_details()
             win.destroy()
 
-        ttk.Button(row, text="Save", command=_save).pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(row, text="Clear", command=lambda: (pos_var.set(""), zh_var.set(""))).pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(row, text="Cancel", command=win.destroy).pack(side=tk.LEFT)
+        ttk.Button(row, text=self.tr("save"), command=_save).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(row, text=self.tr("clear"), command=lambda: (pos_var.set(""), zh_var.set(""))).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(row, text=self.tr("cancel"), command=win.destroy).pack(side=tk.LEFT)
 
         pos_entry.focus_set()
         win.transient(self.winfo_toplevel())
@@ -1827,10 +2482,10 @@ class MainView(ttk.Frame):
 
         wrap = ttk.Frame(self.manual_words_window, style="Card.TFrame")
         wrap.pack(fill="both", expand=True, padx=10, pady=10)
-        ttk.Label(wrap, text="Paste into preview table", style="Card.TLabel").pack(anchor="w")
+        ttk.Label(wrap, text=self.tr("paste_preview"), style="Card.TLabel").pack(anchor="w")
         ttk.Label(
             wrap,
-            text="Paste a two-column table from Google Docs/Sheets. Column 1 = English, Column 2 = Notes.",
+            text=self.tr("paste_preview_desc"),
             style="Card.TLabel",
             foreground="#666",
         ).pack(anchor="w", pady=(0, 6))
@@ -1844,8 +2499,8 @@ class MainView(ttk.Frame):
             height=12,
             selectmode="browse",
         )
-        self.manual_words_table.heading("en", text="English")
-        self.manual_words_table.heading("note", text="Notes")
+        self.manual_words_table.heading("en", text=self.tr("english"))
+        self.manual_words_table.heading("note", text=self.tr("notes"))
         self.manual_words_table.column("en", width=260, anchor="w")
         self.manual_words_table.column("note", width=420, anchor="w")
         self.manual_words_table.grid(row=0, column=0, sticky="nsew")
@@ -1876,37 +2531,37 @@ class MainView(ttk.Frame):
         row.pack(fill="x", pady=(8, 0))
         ttk.Button(
             row,
-            text="Paste Clipboard",
+            text=self.tr("paste_clipboard"),
             command=self.on_manual_preview_paste,
         ).pack(side=tk.LEFT, padx=(0, 6))
         ttk.Button(
             row,
-            text="Add Row",
+            text=self.tr("add_row"),
             command=self._add_manual_preview_row,
         ).pack(side=tk.LEFT, padx=(0, 6))
         ttk.Button(
             row,
-            text="Delete Selected",
+            text=self.tr("delete_selected"),
             command=self._delete_selected_manual_preview_rows,
         ).pack(side=tk.LEFT, padx=(0, 6))
         ttk.Button(
             row,
-            text="Clear",
+            text=self.tr("clear"),
             command=self._clear_manual_preview,
         ).pack(side=tk.LEFT, padx=(0, 12))
         ttk.Button(
             row,
-            text="Replace List",
+            text=self.tr("replace_list"),
             command=lambda: self._apply_manual_words_from_editor("replace"),
         ).pack(side=tk.LEFT, padx=(0, 6))
         ttk.Button(
             row,
-            text="Append",
+            text=self.tr("append"),
             command=lambda: self._apply_manual_words_from_editor("append"),
         ).pack(side=tk.LEFT, padx=(0, 6))
         ttk.Button(
             row,
-            text="Close",
+            text=self.tr("close"),
             command=self._close_manual_words_window,
         ).pack(side=tk.LEFT)
 
@@ -2216,6 +2871,91 @@ class MainView(ttk.Frame):
         self.refresh_history()
         self.reset_playback_state()
 
+    def on_history_right_click(self, event):
+        if not self.history_list or not self.history_context_menu:
+            return
+        index = self.history_list.nearest(event.y)
+        if index < 0:
+            return
+        try:
+            self.history_list.selection_clear(0, tk.END)
+            self.history_list.selection_set(index)
+            self.history_list.activate(index)
+        except Exception:
+            pass
+        try:
+            self.history_context_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self.history_context_menu.grab_release()
+        return "break"
+
+    def delete_selected_history_item(self):
+        sel = self.history_list.curselection()
+        if not sel:
+            return
+        history = self.store.load_history()
+        idx = sel[0]
+        if idx >= len(history):
+            return
+        item = history[idx]
+        path = str(item.get("path") or "").strip()
+        name = str(item.get("name") or os.path.basename(path) or path)
+        if not messagebox.askyesno(self.tr("history"), self.trf("delete_history_confirm", name=name)):
+            return
+        self.store.remove_history(path)
+        removed_count = tts_cleanup_cache_for_source_path(path)
+        self.refresh_history()
+        self.show_info("history_deleted", name=name, count=removed_count)
+
+    def add_manual_wrong_word(self):
+        word = self._prompt_text_input(self.tr("add_wrong_word"), self.tr("enter_wrong_word"))
+        if word is None:
+            return
+        token = str(word or "").strip()
+        if not token:
+            return
+        if token not in self.store.words:
+            self.store.words.append(token)
+            self.store.notes.append("")
+            self.manual_source_dirty = True
+            self.render_words(self.store.words)
+        self.store.add_wrong_word(token)
+        self.refresh_dictation_recent_list()
+        self._refresh_selection_details()
+        self.show_info("wrong_word_added", word=token)
+
+    def _prompt_text_input(self, title, prompt):
+        win = tk.Toplevel(self)
+        win.title(str(title or "Input"))
+        win.configure(bg="#f6f7fb")
+        win.resizable(False, False)
+        result = {"value": None}
+
+        wrap = ttk.Frame(win, style="Card.TFrame")
+        wrap.pack(fill="both", expand=True, padx=10, pady=10)
+        ttk.Label(wrap, text=str(prompt or ""), style="Card.TLabel", wraplength=360, justify="left").pack(anchor="w")
+        value_var = tk.StringVar()
+        entry = ttk.Entry(wrap, textvariable=value_var, width=36)
+        entry.pack(fill="x", pady=(8, 10))
+
+        def _submit():
+            result["value"] = value_var.get()
+            win.destroy()
+
+        def _cancel():
+            win.destroy()
+
+        btn_row = ttk.Frame(wrap, style="Card.TFrame")
+        btn_row.pack(fill="x")
+        ttk.Button(btn_row, text=self.tr("confirm"), command=_submit).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(btn_row, text=self.tr("cancel"), command=_cancel).pack(side=tk.LEFT)
+        entry.bind("<Return>", lambda _e: _submit())
+        entry.focus_set()
+        win.transient(self)
+        win.grab_set()
+        self.wait_window(win)
+        return result["value"]
+
     # Corpus find
     def open_find_window(self):
         if self.find_window and self.find_window.winfo_exists():
@@ -2234,12 +2974,12 @@ class MainView(ttk.Frame):
         wrap.grid_columnconfigure(1, weight=2)
         wrap.grid_rowconfigure(2, weight=1)
 
-        ttk.Label(wrap, text="Find Corpus Sentences", style="Card.TLabel").grid(
+        ttk.Label(wrap, text=self.tr("find_corpus_sentences"), style="Card.TLabel").grid(
             row=0, column=0, columnspan=2, sticky="w"
         )
         ttk.Label(
             wrap,
-            text="Import txt/docx/pdf files, build a local sentence index, then search by word or phrase.",
+            text=self.tr("find_desc"),
             style="Card.TLabel",
             foreground="#666",
         ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 8))
@@ -2256,8 +2996,8 @@ class MainView(ttk.Frame):
         entry = ttk.Entry(search_row, textvariable=self.find_search_var)
         entry.grid(row=0, column=0, sticky="ew", padx=(0, 6))
         entry.bind("<Return>", lambda _e: self.run_find_search())
-        ttk.Button(search_row, text="Search", command=self.run_find_search).grid(row=0, column=1, padx=(0, 6))
-        ttk.Label(search_row, text="Show", style="Card.TLabel").grid(row=0, column=2, padx=(0, 4))
+        ttk.Button(search_row, text=self.tr("search"), command=self.run_find_search).grid(row=0, column=1, padx=(0, 6))
+        ttk.Label(search_row, text=self.tr("show"), style="Card.TLabel").grid(row=0, column=2, padx=(0, 4))
         limit_combo = ttk.Combobox(
             search_row,
             textvariable=self.find_limit_var,
@@ -2266,11 +3006,11 @@ class MainView(ttk.Frame):
             values=("20", "50", "100"),
         )
         limit_combo.grid(row=0, column=3, padx=(0, 6))
-        ttk.Label(search_row, text="results", style="Card.TLabel").grid(row=0, column=4, padx=(0, 6))
-        ttk.Button(search_row, text="Use Selected Word", command=self.search_selected_word_in_corpus).grid(
+        ttk.Label(search_row, text=self.tr("results"), style="Card.TLabel").grid(row=0, column=4, padx=(0, 6))
+        ttk.Button(search_row, text=self.tr("use_selected_word"), command=self.search_selected_word_in_corpus).grid(
             row=0, column=5, padx=(0, 6)
         )
-        ttk.Button(search_row, text="Import Docs", command=self.import_find_documents).grid(row=0, column=6)
+        ttk.Button(search_row, text=self.tr("import_docs"), command=self.import_find_documents).grid(row=0, column=6)
 
         ttk.Label(top, textvariable=self.find_status_var, style="Card.TLabel", foreground="#444").grid(
             row=1, column=0, sticky="w", pady=(0, 8)
@@ -2283,8 +3023,8 @@ class MainView(ttk.Frame):
             height=18,
             selectmode="browse",
         )
-        self.find_results_table.heading("sentence", text="Sentence")
-        self.find_results_table.heading("source", text="Source")
+        self.find_results_table.heading("sentence", text=self.tr("sentence"))
+        self.find_results_table.heading("source", text=self.tr("source"))
         self.find_results_table.column("sentence", width=600, anchor="w")
         self.find_results_table.column("source", width=260, anchor="w")
         find_scroll = ttk.Scrollbar(top, orient="vertical", command=self.find_results_table.yview)
@@ -2293,7 +3033,7 @@ class MainView(ttk.Frame):
         find_scroll.grid(row=2, column=1, sticky="ns")
         self.find_results_table.bind("<<TreeviewSelect>>", self._on_find_result_select)
 
-        ttk.Label(top, text="Preview", style="Card.TLabel").grid(row=3, column=0, sticky="w", pady=(8, 4))
+        ttk.Label(top, text=self.tr("preview"), style="Card.TLabel").grid(row=3, column=0, sticky="w", pady=(8, 4))
         self.find_preview_text = tk.Text(
             top,
             wrap="word",
@@ -2315,8 +3055,8 @@ class MainView(ttk.Frame):
         side_header = ttk.Frame(side, style="Card.TFrame")
         side_header.grid(row=0, column=0, sticky="ew")
         side_header.grid_columnconfigure(0, weight=1)
-        ttk.Label(side_header, text="Indexed Documents", style="Card.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Button(side_header, text="Clear Filter", command=self.clear_find_document_filter).grid(
+        ttk.Label(side_header, text=self.tr("indexed_documents"), style="Card.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Button(side_header, text=self.tr("clear_filter"), command=self.clear_find_document_filter).grid(
             row=0, column=1, sticky="e"
         )
         self.find_docs_list = tk.Listbox(
@@ -2628,10 +3368,10 @@ class MainView(ttk.Frame):
         wrap = ttk.Frame(self.passage_window, style="Card.TFrame")
         wrap.pack(fill="both", expand=True, padx=10, pady=10)
 
-        ttk.Label(wrap, text="IELTS Listening Style Passage", style="Card.TLabel").pack(anchor="w")
+        ttk.Label(wrap, text=self.tr("passage_title"), style="Card.TLabel").pack(anchor="w")
         ttk.Label(
             wrap,
-            text="Generate with Gemini API and read it with Gemini TTS. Select words in the main table first if you only want part of the list.",
+            text=self.tr("passage_desc"),
             style="Card.TLabel",
             foreground="#666",
         ).pack(anchor="w", pady=(0, 8))
@@ -2639,29 +3379,29 @@ class MainView(ttk.Frame):
         ctrl = ttk.Frame(wrap, style="Card.TFrame")
         ctrl.pack(fill="x", pady=(0, 8))
 
-        btn_generate = ttk.Button(ctrl, text="Generate", command=self.generate_ielts_passage)
+        btn_generate = ttk.Button(ctrl, text=self.tr("generate"), command=self.generate_ielts_passage)
         btn_generate.pack(side=tk.LEFT, padx=(0, 6))
         Tooltip(btn_generate, "Build passage from selected words, or the full list if nothing is selected")
 
-        btn_play = ttk.Button(ctrl, text="Read with Gemini TTS", command=self.play_generated_passage)
+        btn_play = ttk.Button(ctrl, text=self.tr("read_with_gemini"), command=self.play_generated_passage)
         btn_play.pack(side=tk.LEFT, padx=(0, 6))
         Tooltip(btn_play, "Speak current passage")
 
-        btn_stop = ttk.Button(ctrl, text="Stop", command=self.stop_passage_playback)
+        btn_stop = ttk.Button(ctrl, text=self.tr("stop"), command=self.stop_passage_playback)
         btn_stop.pack(side=tk.LEFT, padx=(0, 6))
         Tooltip(btn_stop, "Stop speaking")
 
-        btn_practice = ttk.Button(ctrl, text="Practice", command=self.start_passage_practice)
+        btn_practice = ttk.Button(ctrl, text=self.tr("practice"), command=self.start_passage_practice)
         btn_practice.pack(side=tk.LEFT, padx=(0, 6))
         Tooltip(btn_practice, "Hide keywords as blanks")
 
-        btn_check_practice = ttk.Button(ctrl, text="Check", command=self.check_passage_practice)
+        btn_check_practice = ttk.Button(ctrl, text=self.tr("check"), command=self.check_passage_practice)
         btn_check_practice.pack(side=tk.LEFT)
         Tooltip(btn_check_practice, "Check your filled answers")
 
         model_wrap = ttk.Frame(ctrl, style="Card.TFrame")
         model_wrap.pack(side=tk.RIGHT)
-        ttk.Label(model_wrap, text="Model:", style="Card.TLabel").pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Label(model_wrap, text=self.tr("model"), style="Card.TLabel").pack(side=tk.LEFT, padx=(0, 4))
         self.gemini_model_combo = ttk.Combobox(
             model_wrap,
             textvariable=self.gemini_model_var,
@@ -2686,7 +3426,7 @@ class MainView(ttk.Frame):
         practice_wrap.pack(fill="x", pady=(8, 0))
         ttk.Label(
             practice_wrap,
-            text="Practice: fill one missing word/phrase per line (in order).",
+            text=self.tr("practice_tip"),
             style="Card.TLabel",
             foreground="#666",
         ).pack(anchor="w")
@@ -2917,10 +3657,10 @@ class MainView(ttk.Frame):
         wrap = ttk.Frame(win, style="Card.TFrame")
         wrap.pack(fill="both", expand=True, padx=12, pady=12)
 
-        ttk.Label(wrap, text="Gemini API setup", style="Card.TLabel").pack(anchor="w")
+        ttk.Label(wrap, text=self.tr("gemini_api_setup"), style="Card.TLabel").pack(anchor="w")
         ttk.Label(
             wrap,
-            text="Paste your own Gemini API key. The app will test it before enabling AI features.",
+            text=self.tr("gemini_key_desc"),
             style="Card.TLabel",
             foreground="#666",
         ).pack(anchor="w", pady=(0, 8))
@@ -2933,7 +3673,7 @@ class MainView(ttk.Frame):
 
         ttk.Label(
             wrap,
-            text="Model used for article generation and sentence generation:",
+            text=self.tr("gemini_model_desc"),
             style="Card.TLabel",
             foreground="#666",
         ).pack(anchor="w", pady=(8, 4))
@@ -2953,9 +3693,9 @@ class MainView(ttk.Frame):
 
         btn_row = ttk.Frame(wrap, style="Card.TFrame")
         btn_row.pack(fill="x", pady=(10, 0))
-        self.gemini_key_test_btn = ttk.Button(btn_row, text="Test and Save", command=self.test_and_save_gemini_key)
+        self.gemini_key_test_btn = ttk.Button(btn_row, text=self.tr("test_and_save"), command=self.test_and_save_gemini_key)
         self.gemini_key_test_btn.pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(btn_row, text="Exit", command=self._cancel_gemini_key_setup).pack(side=tk.LEFT)
+        ttk.Button(btn_row, text=self.tr("exit"), command=self._cancel_gemini_key_setup).pack(side=tk.LEFT)
 
         win.grab_set()
         win.protocol("WM_DELETE_WINDOW", self._cancel_gemini_key_setup)
@@ -3256,7 +3996,7 @@ class MainView(ttk.Frame):
     def toggle_check(self):
         self.check_visible = True
         self.history_visible = True
-        self._select_sidebar_tab("check")
+        self.open_dictation_window()
         self._refresh_selection_details()
 
     def set_order_mode(self, mode):
@@ -3286,11 +4026,11 @@ class MainView(ttk.Frame):
                 style="SelectedSpeed.TButton" if mode == "click_to_play" else "Speed.TButton"
             )
         if self.order_tip:
-            self.order_tip.text = "In order (from current)"
+            self.order_tip.text = "In order (from current)" if self.ui_language_var.get() == "en" else "顺序播放（从当前词开始）"
         if self.order_tip_rand:
-            self.order_tip_rand.text = "Random (no repeat)"
+            self.order_tip_rand.text = "Random (no repeat)" if self.ui_language_var.get() == "en" else "随机不重复"
         if self.order_tip_click:
-            self.order_tip_click.text = "Click one word to play one"
+            self.order_tip_click.text = "Click one word to play one" if self.ui_language_var.get() == "en" else "点一个词读一个词"
         if self.stop_at_end_check:
             # This option only applies to auto-play modes.
             self.stop_at_end_check.config(state=("disabled" if mode == "click_to_play" else "normal"))
@@ -3341,7 +4081,7 @@ class MainView(ttk.Frame):
 
     def open_settings_window(self):
         self.settings_window = tk.Toplevel(self)
-        self.settings_window.title("Settings")
+        self.settings_window.title(self.tr("settings_title"))
         self.settings_window.configure(bg="#f6f7fb")
         self.settings_window.resizable(False, False)
 
@@ -3354,7 +4094,13 @@ class MainView(ttk.Frame):
         right_panel.grid(row=0, column=1, padx=(10, 0), sticky="n")
         right_panel.grid_propagate(False)
 
-        self.settings_sections_visible = {"source": True, "order": True, "speed": False, "volume": False}
+        self.settings_sections_visible = {
+            "source": True,
+            "order": True,
+            "speed": False,
+            "volume": False,
+            "language": False,
+        }
         sections = []
 
         def rebuild_sections():
@@ -3388,13 +4134,19 @@ class MainView(ttk.Frame):
             rebuild_sections()
 
         # Left menu
-        for label, key in [("Source", "source"), ("Order", "order"), ("Speed", "speed"), ("Volume", "volume")]:
+        for label, key in [
+            (self.tr("settings_toggle_source"), "source"),
+            (self.tr("settings_toggle_order"), "order"),
+            (self.tr("settings_toggle_speed"), "speed"),
+            (self.tr("settings_toggle_volume"), "volume"),
+            (self.tr("ui_language"), "language"),
+        ]:
             btn = ttk.Button(left_menu, text=label, command=lambda k=key: toggle_section(k))
             btn.pack(fill=tk.X, pady=4)
 
         # Source section
         source_section = ttk.Frame(right_panel, style="Card.TFrame")
-        ttk.Label(source_section, text="Source", style="Card.TLabel").pack(anchor="w")
+        ttk.Label(source_section, text=self.tr("source"), style="Card.TLabel").pack(anchor="w")
 
         self.voice_combo = ttk.Combobox(
             source_section,
@@ -3404,7 +4156,7 @@ class MainView(ttk.Frame):
         )
         self.voice_combo.pack(anchor="w")
         self.voice_combo.bind("<<ComboboxSelected>>", self.on_voice_change)
-        ttk.Button(source_section, text="Gemini API Key", command=self.open_gemini_key_window).pack(
+        ttk.Button(source_section, text=self.tr("gemini_api_key"), command=self.open_gemini_key_window).pack(
             anchor="w", pady=(8, 0)
         )
 
@@ -3413,10 +4165,10 @@ class MainView(ttk.Frame):
 
         # Order section
         order_section = ttk.Frame(right_panel, style="Card.TFrame")
-        ttk.Label(order_section, text="Order", style="Card.TLabel").pack(anchor="w")
+        ttk.Label(order_section, text=self.tr("order"), style="Card.TLabel").pack(anchor="w")
         ttk.Label(
             order_section,
-            text="Choose in-order, random (no repeat), or click-to-play.",
+            text=self.tr("order_desc"),
             style="Card.TLabel",
             foreground="#666",
         ).pack(anchor="w", pady=(0, 4))
@@ -3433,7 +4185,7 @@ class MainView(ttk.Frame):
         self.order_tip_click = Tooltip(self.order_btn_click, "Click one word to play one")
         self.stop_at_end_check = ttk.Checkbutton(
             order_section,
-            text="Stop after list (no repeat list)",
+            text=self.tr("stop_after_list"),
             variable=self.stop_at_end_var,
             command=self.on_stop_at_end_toggle,
         )
@@ -3443,10 +4195,10 @@ class MainView(ttk.Frame):
 
         # Speed section
         speed_section = ttk.Frame(right_panel, style="Card.TFrame")
-        ttk.Label(speed_section, text="Speed", style="Card.TLabel").pack(anchor="w")
+        ttk.Label(speed_section, text=self.tr("speed"), style="Card.TLabel").pack(anchor="w")
         ttk.Label(
             speed_section,
-            text="Interval: time between words.",
+            text=self.tr("speed_desc"),
             style="Card.TLabel",
             foreground="#666",
         ).pack(anchor="w", pady=(0, 4))
@@ -3460,15 +4212,15 @@ class MainView(ttk.Frame):
 
         custom_row = ttk.Frame(speed_section, style="Card.TFrame")
         custom_row.pack(anchor="w", pady=(4, 0))
-        ttk.Label(custom_row, text="Custom (s):", style="Card.TLabel").pack(side=tk.LEFT)
+        ttk.Label(custom_row, text=self.tr("custom_seconds"), style="Card.TLabel").pack(side=tk.LEFT)
         self.custom_interval = ttk.Entry(custom_row, width=6)
         self.custom_interval.pack(side=tk.LEFT, padx=4)
         self.custom_interval.bind("<Return>", lambda _e: self.apply_custom_interval())
-        ttk.Button(custom_row, text="Apply", command=self.apply_custom_interval).pack(side=tk.LEFT)
+        ttk.Button(custom_row, text=self.tr("apply"), command=self.apply_custom_interval).pack(side=tk.LEFT)
 
         ttk.Label(
             speed_section,
-            text="Pronunciation: speaking speed for each word.",
+            text=self.tr("pronunciation_speed"),
             style="Card.TLabel",
             foreground="#666",
         ).pack(anchor="w", pady=(8, 4))
@@ -3484,10 +4236,10 @@ class MainView(ttk.Frame):
 
         # Volume section
         volume_section = ttk.Frame(right_panel, style="Card.TFrame")
-        ttk.Label(volume_section, text="Volume", style="Card.TLabel").pack(anchor="w")
+        ttk.Label(volume_section, text=self.tr("volume"), style="Card.TLabel").pack(anchor="w")
         ttk.Label(
             volume_section,
-            text="Adjust output volume for playback.",
+            text=self.tr("volume_desc"),
             style="Card.TLabel",
             foreground="#666",
         ).pack(anchor="w", pady=(0, 4))
@@ -3510,6 +4262,26 @@ class MainView(ttk.Frame):
         volume_sep = ttk.Separator(right_panel, orient="horizontal")
         sections.append({"key": "volume", "frame": volume_section, "sep": volume_sep})
 
+        language_section = ttk.Frame(right_panel, style="Card.TFrame")
+        ttk.Label(language_section, text=self.tr("ui_language"), style="Card.TLabel").pack(anchor="w")
+        language_combo = ttk.Combobox(
+            language_section,
+            textvariable=self.ui_language_var,
+            state="readonly",
+            width=18,
+            values=("zh", "en"),
+        )
+        language_combo.pack(anchor="w", pady=(4, 0))
+        language_combo.bind("<<ComboboxSelected>>", self.on_ui_language_change)
+        ttk.Label(
+            language_section,
+            text=f"zh = {self.tr('language_zh')}   |   en = {self.tr('language_en')}",
+            style="Card.TLabel",
+            foreground="#666",
+        ).pack(anchor="w", pady=(6, 0))
+        language_sep = ttk.Separator(right_panel, orient="horizontal")
+        sections.append({"key": "language", "frame": language_section, "sep": language_sep})
+
         rebuild_sections()
 
         self.update_order_button()
@@ -3525,7 +4297,7 @@ class MainView(ttk.Frame):
             if val < 0.2:
                 raise ValueError
         except Exception:
-            messagebox.showinfo("Info", "Please enter a valid number (>=0.2).")
+            self.show_info("valid_number_needed")
             return
         self.set_interval(val)
 
@@ -3582,11 +4354,11 @@ class MainView(ttk.Frame):
 
     def toggle_play(self):
         if not self.store.words:
-            messagebox.showinfo("Info", "Please import words first.")
+            self.show_info("import_words_first")
             return
         if self.order_mode.get() == "click_to_play":
             if self._get_selected_index() is None:
-                messagebox.showinfo("Info", "Click a word first in Click-to-play mode.")
+                self.show_info("click_word_first_mode")
                 return
             self.play_state = "stopped"
             self.cancel_schedule()
@@ -3679,9 +4451,9 @@ class MainView(ttk.Frame):
 
     def update_play_button(self):
         if self.play_state == "playing":
-            self.play_btn.config(text="⏸ Pause")
+            self.play_btn.config(text=("⏸ Pause" if self.ui_language_var.get() == "en" else "⏸ 暂停"))
         else:
-            self.play_btn.config(text="▶ Play")
+            self.play_btn.config(text=self.tr("play"))
         self._refresh_selection_details()
 
     def reset_playback_state(self):
@@ -3752,30 +4524,26 @@ class MainView(ttk.Frame):
         if self.suppress_word_select_action:
             self.suppress_word_select_action = False
             return
-        # When the user clicks a word, restart playback from that word.
+        # Single-click only updates selection state.
         if not self.store.words:
             return
         if self._get_selected_index() is None:
             self._refresh_selection_details()
             return
         self._refresh_selection_details()
-        tts_cancel_all()
-        self.play_token += 1
-        self.build_queue_from_selection()
-        if self.order_mode.get() == "click_to_play":
-            self.play_state = "stopped"
-            self.cancel_schedule()
-            self.update_play_button()
-            self.play_current()
-            return
-        if self.play_state == "playing":
-            self.update_play_button()
-            self.play_current()
-            self.schedule_next()
 
     def on_word_double_click(self, event=None):
-        # Double-click edits the clicked word/note cell.
-        self.start_edit_word_cell(event=event)
+        if not self.store.words:
+            return "break"
+        row_id = self.word_table.identify_row(event.y) if event is not None and self.word_table else ""
+        if row_id:
+            try:
+                self.word_table.selection_set(row_id)
+                self.word_table.focus(row_id)
+            except Exception:
+                pass
+        if self._get_selected_index() is not None:
+            self.speak_selected()
         return "break"
 
     def on_word_right_click(self, event):
@@ -3846,7 +4614,7 @@ class MainView(ttk.Frame):
     def make_sentence_for_selected_word(self):
         selected_idx = self._get_selected_index()
         if selected_idx is None or selected_idx >= len(self.store.words):
-            messagebox.showinfo("Info", "Please select a word first.")
+            self.show_info("select_word_first")
             return
         if not self._require_gemini_ready():
             return
@@ -3915,7 +4683,7 @@ class MainView(ttk.Frame):
         row.pack(fill="x", pady=(8, 0))
         ttk.Button(
             row,
-            text="Read Sentence",
+            text=self.tr("read_sentence"),
             command=lambda s=sentence: speak_async(
                 s,
                 self.volume_var.get() / 100.0,
@@ -3924,14 +4692,13 @@ class MainView(ttk.Frame):
                 source_path=self.store.get_current_source_path(),
             ),
         ).pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(row, text="Close", command=self.sentence_window.destroy).pack(side=tk.LEFT)
+        ttk.Button(row, text=self.tr("close"), command=self.sentence_window.destroy).pack(side=tk.LEFT)
 
     def toggle_wordlist_visibility(self):
         # Hide or show the word list during dictation to avoid seeing words.
         top = self.winfo_toplevel()
         self.wordlist_hidden = not self.wordlist_hidden
         if self.wordlist_hidden:
-            self._select_sidebar_tab("check")
             self.hidden_notebook_tabs = []
             try:
                 self.saved_window_geometry = top.geometry()
@@ -3942,7 +4709,7 @@ class MainView(ttk.Frame):
                 self.saved_window_geometry = ""
                 self.saved_window_minsize = None
             self.left.grid_remove()
-            self.hide_words_btn.config(text="Show Word List")
+            self.hide_words_btn.config(text=self.tr("show_word_list"))
             if self.right_notebook:
                 for tab in (self.review_tab, self.history_tab, self.tools_tab):
                     try:
@@ -3950,7 +4717,6 @@ class MainView(ttk.Frame):
                         self.hidden_notebook_tabs.append(tab)
                     except Exception:
                         pass
-                self._select_sidebar_tab("check")
             try:
                 top.minsize(560, 430)
                 top.geometry("620x500")
@@ -3958,7 +4724,7 @@ class MainView(ttk.Frame):
                 pass
         else:
             self.left.grid()
-            self.hide_words_btn.config(text="Hide Word List")
+            self.hide_words_btn.config(text=self.tr("hide_word_list"))
             if self.right_notebook:
                 for tab in self.hidden_notebook_tabs:
                     try:
