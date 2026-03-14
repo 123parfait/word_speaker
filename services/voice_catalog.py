@@ -1,30 +1,45 @@
 # -*- coding: utf-8 -*-
+import os
+from pathlib import Path
 
-# Kokoro voices focused on English accents.
-_VOICE_PROFILES = [
-    {
-        "id": "af_heart",
-        "name": "English (US)",
-        "languages": ["en-us"],
-    },
-    {
-        "id": "bf_emma",
-        "name": "English (UK)",
-        "languages": ["en-gb"],
-    },
-]
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+KOKORO_DIR = BASE_DIR / "data" / "models" / "kokoro"
+KOKORO_MODEL = KOKORO_DIR / "kokoro-v1.0.onnx"
+KOKORO_VOICES = KOKORO_DIR / "voices-v1.0.bin"
+
+
+def kokoro_ready():
+    return KOKORO_MODEL.exists() and KOKORO_VOICES.exists()
+
+
+def get_kokoro_paths():
+    return str(KOKORO_MODEL), str(KOKORO_VOICES)
 
 
 def list_system_voices():
-    # Keep function name for backward compatibility with the current UI call site.
-    return [dict(v) for v in _VOICE_PROFILES]
+    voices = [
+        {
+            "source": "gemini",
+            "id": "gemini-kore",
+            "name": "Gemini TTS (UK)",
+            "languages": ["en-GB"],
+        },
+    ]
+    if kokoro_ready():
+        voices.append(
+            {
+                "source": "kokoro",
+                "id": "bf_emma",
+                "name": "Kokoro English (UK)",
+                "languages": ["en-GB"],
+            }
+        )
+    return voices
 
 
-def get_voice_profile(voice_id):
-    for profile in _VOICE_PROFILES:
-        if profile["id"] == voice_id:
+def get_voice_profile(source, voice_id):
+    for profile in list_system_voices():
+        if profile.get("source") == source and profile.get("id") == voice_id:
             return dict(profile)
-    for profile in _VOICE_PROFILES:
-        if profile.get("id") == "bf_emma":
-            return dict(profile)
-    return dict(_VOICE_PROFILES[0])
+    return dict(list_system_voices()[0])

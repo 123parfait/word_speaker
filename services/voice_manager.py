@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
+SOURCE_GEMINI = "gemini"
 SOURCE_KOKORO = "kokoro"
+SOURCE_PIPER = SOURCE_GEMINI
 
-_voice_source = SOURCE_KOKORO
-_voice_id = "bf_emma"
-_voice_label = "English (UK)"
+_voice_source = SOURCE_GEMINI
+_voice_id = "gemini-kore"
+_voice_label = "Gemini TTS (UK)"
 
 
 def get_voice_source():
@@ -20,9 +22,13 @@ def get_voice_label():
 
 def set_voice_source(source, voice_id=None, voice_label=None):
     global _voice_source, _voice_id, _voice_label
-    if source != SOURCE_KOKORO:
+    if source not in {SOURCE_GEMINI, SOURCE_KOKORO, SOURCE_PIPER}:
         return False
-    _voice_source = source
-    _voice_id = voice_id if voice_id else "bf_emma"
-    _voice_label = voice_label if voice_label else "English (UK)"
+    _voice_source = SOURCE_GEMINI if source == SOURCE_PIPER else source
+    if _voice_source == SOURCE_KOKORO:
+        _voice_id = voice_id if voice_id else "bf_emma"
+        _voice_label = voice_label if voice_label else "Kokoro English (UK)"
+    else:
+        _voice_id = voice_id if voice_id else "gemini-kore"
+        _voice_label = voice_label if voice_label else "Gemini TTS (UK)"
     return True

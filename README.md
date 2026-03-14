@@ -12,12 +12,12 @@ A Windows desktop app for vocabulary study, pronunciation, translation, IELTS-st
 - Double-click a word to edit it
 - Double-click a word or use the speaker button to play pronunciation
 - Dictation check mode
-- Kokoro TTS for more natural English pronunciation
-- Switch accent between English (US) and English (UK) in Settings > Source
-- First run auto-downloads Kokoro model files; later playback is offline
+- User-selectable TTS source: Gemini TTS or local Kokoro
+- Automatic fallback to Kokoro when Gemini playback fails and local Kokoro models are available
 - Built-in English -> Chinese translation with Argos Translate
 - Translation cache is stored locally, so repeated words do not need to be translated again
-- Generate IELTS-listening-style passages from imported words and read them with Kokoro
+- Word audio is cached locally; if words come from a source file, cached wav files are stored beside that file
+- Generate IELTS-listening-style passages from imported words and read them with the selected TTS source
 - Generate IELTS-style example sentences for selected words
 - Practice mode for generated passages
 - Gemini API is used for article and sentence generation
@@ -48,6 +48,21 @@ py -3 app.py
 
 When the app opens, paste your own Gemini API key into the popup window and click `Test and Save`.
 
+## TTS Behavior
+
+- Pick the active source in `Settings > Source`.
+- `Gemini TTS` is the default online source and requires a valid Gemini API key plus network access.
+- `Kokoro` is an optional offline source and only appears when both local model files exist in `data/models/kokoro/`.
+- If the selected source is Gemini and Gemini playback fails, the app automatically falls back to Kokoro when Kokoro is available locally.
+- Single-word audio is cached locally. If the current list came from a source file, the cache is created beside that file. Otherwise, audio is stored under `data/audio_cache/words/`.
+- Passage playback keeps one source for the whole article. It does not mix Gemini and Kokoro inside the same generated passage.
+
+## Local Runtime Files
+
+- `data/models/kokoro/`: optional offline Kokoro model files
+- `data/audio_cache/`: generated local audio cache
+- `vendor/site-packages/`: optional project-local Python runtime dependencies for local packaging or isolated runs
+
 ## Input format
 - `.txt`: one word per line
 - `.csv`: first column = English, second column = Notes
@@ -70,5 +85,5 @@ When the app opens, paste your own Gemini API key into the popup window and clic
 - Existing local corpus files are intentionally ignored by Git
 
 ## Credits
-- TTS is powered by [thewh1teagle/kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx)
+- Speech synthesis is powered by Gemini TTS and optional local Kokoro playback
 - English -> Chinese translation is powered by [argosopentech/argos-translate](https://github.com/argosopentech/argos-translate)

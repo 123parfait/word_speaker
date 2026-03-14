@@ -1,6 +1,19 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
+import sys
 import tkinter as tk
+from pathlib import Path
 from tkinter import ttk
+
+
+def init_runtime_paths():
+    base_dir = Path(__file__).resolve().parent
+    for vendor_path in (base_dir / "vendor" / "site-packages",):
+        path_str = str(vendor_path)
+        if vendor_path.exists() and path_str not in sys.path:
+            sys.path.insert(0, path_str)
+
+
+init_runtime_paths()
 
 from ui.main_view import MainView
 
@@ -19,7 +32,6 @@ def init_style(root):
         background=[("active", "#c6d6ff"), ("pressed", "#a9c1ff")],
         foreground=[("active", "#1e3a8a"), ("pressed", "#1e3a8a")],
     )
-    # Primary uses the same neutral style; color only on interaction
     style.configure("Primary.TButton", background="#f5f6f8", foreground="#222222")
     style.map(
         "Primary.TButton",

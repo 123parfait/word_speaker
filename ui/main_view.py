@@ -12,6 +12,9 @@ from services.tts import (
     speak_stream_async,
     cancel_all as tts_cancel_all,
     prepare_async as tts_prepare_async,
+    get_backend_status as tts_get_backend_status,
+    get_runtime_label as tts_get_runtime_label,
+    has_cached_word_audio as tts_has_cached_word_audio,
 )
 from services.translation import (
     get_cached_translations,
@@ -34,6 +37,7 @@ from services.gemini_writer import (
 )
 from services.voice_catalog import list_system_voices
 from services.voice_manager import (
+    SOURCE_GEMINI,
     SOURCE_KOKORO,
     get_voice_id,
     get_voice_source,
@@ -130,6 +134,7 @@ class MainView(ttk.Frame):
         self.voice_var = tk.StringVar(value="")
         self.voice_combo = None
         self.voice_map = {}
+        self.tts_status_request = 0
         self.word_table = None
         self.word_table_scroll = None
         self.word_context_menu = None
@@ -1506,7 +1511,7 @@ class MainView(ttk.Frame):
         ttk.Label(wrap, text="IELTS Listening Style Passage", style="Card.TLabel").pack(anchor="w")
         ttk.Label(
             wrap,
-            text="Generate with Gemini API and read it with Kokoro. Select words in the main table first if you only want part of the list.",
+            text="Generate with Gemini API and read it with Gemini TTS. Select words in the main table first if you only want part of the list.",
             style="Card.TLabel",
             foreground="#666",
         ).pack(anchor="w", pady=(0, 8))
@@ -1518,7 +1523,7 @@ class MainView(ttk.Frame):
         btn_generate.pack(side=tk.LEFT, padx=(0, 6))
         Tooltip(btn_generate, "Build passage from selected words, or the full list if nothing is selected")
 
-        btn_play = ttk.Button(ctrl, text="Read with Kokoro", command=self.play_generated_passage)
+        btn_play = ttk.Button(ctrl, text="Read with Gemini TTS", command=self.play_generated_passage)
         btn_play.pack(side=tk.LEFT, padx=(0, 6))
         Tooltip(btn_play, "Speak current passage")
 
@@ -2078,14 +2083,16 @@ class MainView(ttk.Frame):
             return
 
         self._pause_word_playback()
-        speak_stream_async(
+        runtime = tts_get_runtime_label()
+        token = speak_stream_async(
             speech_text,
             self.volume_var.get() / 100.0,
             rate_ratio=self.speech_rate_var.get(),
             cancel_before=False,
             chunk_chars=90,
         )
-        self.passage_status_var.set("Reading passage with Kokoro...")
+        self.passage_status_var.set(f"Generating passage audio with {runtime}...")
+        self._watch_tts_backend(token, target="passage", text_label="passage")
 
     def stop_passage_playback(self):
         tts_cancel_all()
@@ -2098,12 +2105,21 @@ class MainView(ttk.Frame):
             messagebox.showinfo("Info", "Please select a word first.")
             return
         word = self.store.words[selected_idx]
-        speak_async(
+        runtime = tts_get_runtime_label()
+        source_path = self.store.get_current_source_path()
+        cached = tts_has_cached_word_audio(word, source_path=source_path)
+        token = speak_async(
             word,
             self.volume_var.get() / 100.0,
             rate_ratio=self.speech_rate_var.get(),
             cancel_before=True,
+            source_path=source_path,
         )
+        if cached:
+            self.status_var.set(f"Playing cached audio for '{word}'.")
+        else:
+            self.status_var.set(f"Generating '{word}' with {runtime}...")
+        self._watch_tts_backend(token, target="status", text_label=word)
 
     def toggle_settings(self):
         if self.settings_window and self.settings_window.winfo_exists():
@@ -2267,7 +2283,7 @@ class MainView(ttk.Frame):
         ttk.Label(source_section, text="Source", style="Card.TLabel").pack(anchor="w")
         ttk.Label(
             source_section,
-            text="Choose Kokoro accent (English US / English UK).",
+            text="Choose Gemini TTS for online playback, or Kokoro for local offline playback when Kokoro model files are present. If Gemini fails and Kokoro is available, playback will fall back to Kokoro automatically.",
             style="Card.TLabel",
             foreground="#666",
         ).pack(anchor="w", pady=(0, 4))
@@ -2494,12 +2510,21 @@ class MainView(ttk.Frame):
     def play_current(self):
         if not self.current_word:
             return
-        speak_async(
+        runtime = tts_get_runtime_label()
+        source_path = self.store.get_current_source_path()
+        cached = tts_has_cached_word_audio(self.current_word, source_path=source_path)
+        token = speak_async(
             self.current_word,
             self.volume_var.get() / 100.0,
             rate_ratio=self.speech_rate_var.get(),
             cancel_before=True,
+            source_path=source_path,
         )
+        if cached:
+            self.status_var.set(f"Playing cached audio for '{self.current_word}'.")
+        else:
+            self.status_var.set(f"Generating '{self.current_word}' with {runtime}...")
+        self._watch_tts_backend(token, target="status", text_label=self.current_word)
 
     def schedule_next(self):
         self.cancel_schedule()
@@ -2790,6 +2815,7 @@ class MainView(ttk.Frame):
                 self.volume_var.get() / 100.0,
                 rate_ratio=self.speech_rate_var.get(),
                 cancel_before=True,
+                source_path=self.store.get_current_source_path(),
             ),
         ).pack(side=tk.LEFT, padx=(0, 6))
         ttk.Button(row, text="Close", command=self.sentence_window.destroy).pack(side=tk.LEFT)
@@ -2827,7 +2853,7 @@ class MainView(ttk.Frame):
             lang_text = ",".join(lang_parts)
             label = f"{name} ({lang_text})" if lang_text else name
             if label not in self.voice_map:
-                self.voice_map[label] = (SOURCE_KOKORO, v.get("id"), name)
+                self.voice_map[label] = (v.get("source") or SOURCE_GEMINI, v.get("id"), name)
                 options.append(label)
 
         if self.voice_combo:
@@ -2837,9 +2863,9 @@ class MainView(ttk.Frame):
         current_source = get_voice_source()
         current_id = get_voice_id()
         selected = options[0] if options else ""
-        if current_source == SOURCE_KOKORO and current_id:
+        if current_source and current_id:
             for label, data in self.voice_map.items():
-                if data[0] == SOURCE_KOKORO and data[1] == current_id:
+                if data[0] == current_source and data[1] == current_id:
                     selected = label
                     break
         self.voice_var.set(selected)
@@ -2848,10 +2874,42 @@ class MainView(ttk.Frame):
         label = self.voice_var.get()
         data = self.voice_map.get(label)
         if not data:
-            set_voice_source(SOURCE_KOKORO, "bf_emma", "English (UK)")
+            set_voice_source(SOURCE_GEMINI, "gemini-kore", "Gemini TTS (UK)")
             return
         source, voice_id, voice_label = data
         set_voice_source(source, voice_id, voice_label)
+
+    def _watch_tts_backend(self, token, target, text_label):
+        self.tts_status_request += 1
+        request_id = self.tts_status_request
+
+        def _poll(attempt=0):
+            if request_id != self.tts_status_request:
+                return
+            status = tts_get_backend_status(token)
+            if status:
+                label = status.get("label") or "TTS"
+                fallback = bool(status.get("fallback"))
+                from_cache = bool(status.get("from_cache"))
+                if target == "passage":
+                    if fallback:
+                        self.passage_status_var.set(f"Playing passage via {label} after Gemini fallback.")
+                    elif from_cache:
+                        self.passage_status_var.set(f"Playing passage via cached {label} audio.")
+                    else:
+                        self.passage_status_var.set(f"Playing passage via {label}.")
+                else:
+                    if fallback:
+                        self.status_var.set(f"Playing '{text_label}' via {label} after Gemini fallback.")
+                    elif from_cache:
+                        self.status_var.set(f"Playing cached audio for '{text_label}' via {label}.")
+                    else:
+                        self.status_var.set(f"Playing '{text_label}' via {label}.")
+                return
+            if attempt < 120:
+                self.after(250, lambda: _poll(attempt + 1))
+
+        self.after(250, _poll)
 
     # Input check
     def on_check_enter(self, _event=None):

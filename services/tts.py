@@ -1,138 +1,107 @@
 # -*- coding: utf-8 -*-
+import base64
+import hashlib
+import json
 import os
-import queue
 import re
-import threading
+import shutil
 import tempfile
+import threading
 import urllib.error
 import urllib.request
 import wave
 import winsound
-from pathlib import Path
 
+import numpy as np
 from tkinter import messagebox
 
-from services.voice_catalog import get_voice_profile
-from services.voice_manager import get_voice_id
+from services.app_config import get_gemini_api_key
+from services.voice_catalog import get_kokoro_paths, get_voice_profile, kokoro_ready
+from services.voice_manager import SOURCE_GEMINI, SOURCE_KOKORO, get_voice_id, get_voice_source
+
+
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+GLOBAL_WORD_CACHE_DIR = os.path.join(BASE_DIR, "data", "audio_cache", "words")
+KOKORO_SAMPLE_RATE = 24000
 
 _lock = threading.Lock()
 _token = 0
-_kokoro = None
-_download_started = False
-_download_failed_reason = None
 _shown_errors = set()
 _current_wav = None
+_kokoro = None
+_kokoro_lock = threading.Lock()
+_backend_lock = threading.Lock()
+_backend_status = {}
 
-_MODEL_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx"
-_VOICES_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin"
-_MODELS_DIR = Path(__file__).resolve().parent.parent / "data" / "models" / "kokoro"
-_MODEL_PATH = _MODELS_DIR / "kokoro-v1.0.onnx"
-_VOICES_PATH = _MODELS_DIR / "voices-v1.0.bin"
-
-
-def _download_file(url, target_path):
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = Path(str(target_path) + ".part")
-    start_offset = temp_path.stat().st_size if temp_path.exists() else 0
-    headers = {}
-    mode = "wb"
-    if start_offset > 0:
-        headers["Range"] = f"bytes={start_offset}-"
-        mode = "ab"
-
-    request = urllib.request.Request(url, headers=headers)
-    try:
-        with urllib.request.urlopen(request, timeout=60) as response:
-            status = getattr(response, "status", 200)
-            if start_offset > 0 and status != 206:
-                # Server did not accept range request; restart from zero.
-                start_offset = 0
-                mode = "wb"
-            with open(temp_path, mode) as fp:
-                while True:
-                    chunk = response.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    fp.write(chunk)
-    except urllib.error.HTTPError as e:
-        # 416 can happen when the partial file already reached file end.
-        if e.code == 416 and temp_path.exists() and temp_path.stat().st_size > 0:
-            os.replace(temp_path, target_path)
-            return
-        raise
-    os.replace(temp_path, target_path)
+TTS_MODEL = "gemini-2.5-flash-preview-tts"
+TTS_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{TTS_MODEL}:generateContent"
+TTS_SAMPLE_RATE = 24000
+TTS_CHANNELS = 1
+TTS_SAMPLE_WIDTH = 2
+TTS_VOICE_NAME = "Kore"
+TTS_STYLE_SHORT = "Read the word clearly in a neutral British English accent for IELTS vocabulary practice."
+TTS_STYLE_LONG = "Read this passage clearly in a natural British English accent for IELTS listening practice."
 
 
-def _models_ready():
-    return _MODEL_PATH.exists() and _VOICES_PATH.exists()
+def _clamp(value, low, high):
+    return max(low, min(high, float(value)))
 
 
-def _download_models_worker():
-    global _download_started, _download_failed_reason
-    try:
-        if not _MODEL_PATH.exists():
-            _download_file(_MODEL_URL, _MODEL_PATH)
-        if not _VOICES_PATH.exists():
-            _download_file(_VOICES_URL, _VOICES_PATH)
-        with _lock:
-            _download_failed_reason = None
-    except Exception as e:
-        with _lock:
-            _download_failed_reason = str(e)
-    finally:
-        with _lock:
-            _download_started = False
+def _normalize_text(text, ensure_sentence_end=False):
+    raw = re.sub(r"\s+", " ", str(text or "").strip())
+    if ensure_sentence_end and raw and raw[-1] not in ".!?;:":
+        raw = f"{raw}."
+    return raw
 
 
-def _start_model_download_if_needed():
-    global _download_started
-    with _lock:
-        if _models_ready() or _download_started:
-            return
-        _download_started = True
-    threading.Thread(target=_download_models_worker, daemon=True).start()
+def _safe_name(text, limit=40):
+    raw = re.sub(r"[^A-Za-z0-9._-]+", "_", str(text or "").strip()).strip("._-")
+    return (raw or "audio")[:limit]
 
 
-def _get_kokoro_not_ready_reason():
-    with _lock:
-        if _download_failed_reason:
-            return f"Kokoro model download failed: {_download_failed_reason}"
-        if _download_started:
-            return "Kokoro model is downloading in background. Please wait and try again."
-    return "Kokoro model files are not ready yet."
+def _word_cache_dir(source_path=None):
+    source = str(source_path or "").strip()
+    if source and os.path.isfile(source):
+        base_name = os.path.basename(source)
+        return os.path.join(os.path.dirname(source), f".{base_name}.wordspeaker_audio")
+    return GLOBAL_WORD_CACHE_DIR
 
 
-def _ensure_kokoro():
-    global _kokoro
-    if _kokoro is not None:
-        return _kokoro
-    try:
-        from kokoro_onnx import Kokoro  # imported lazily to keep app startup fast
-    except Exception as e:
-        raise RuntimeError(
-            "Kokoro is not available. Install a 64-bit Python environment and run: "
-            "pip install kokoro-onnx onnxruntime"
-        ) from e
-    if not _models_ready():
-        raise RuntimeError(_get_kokoro_not_ready_reason())
-    _kokoro = Kokoro(str(_MODEL_PATH), str(_VOICES_PATH))
-    return _kokoro
+def _word_cache_path(text, source_path=None):
+    source = get_voice_source()
+    voice_id = get_voice_id()
+    normalized = _normalize_text(text, ensure_sentence_end=False).casefold()
+    key = hashlib.sha1(
+        f"{source}|{voice_id}|{TTS_MODEL}|{TTS_VOICE_NAME}|{normalized}".encode("utf-8")
+    ).hexdigest()[:16]
+    name = _safe_name(normalized)
+    return os.path.join(_word_cache_dir(source_path), f"{name}_{key}.wav")
 
 
-def _write_temp_wav(audio, sample_rate):
-    import numpy as np
-
-    pcm = np.asarray(audio, dtype=np.float32)
-    pcm = np.clip(pcm, -1.0, 1.0)
-    pcm16 = (pcm * 32767.0).astype(np.int16)
-    fd, path = tempfile.mkstemp(prefix="wordspeaker_", suffix=".wav")
+def _clone_to_temp(path):
+    fd, temp_path = tempfile.mkstemp(prefix="wordspeaker_", suffix=".wav")
     os.close(fd)
-    with wave.open(path, "wb") as wav_fp:
-        wav_fp.setnchannels(1)
-        wav_fp.setsampwidth(2)
-        wav_fp.setframerate(int(sample_rate))
-        wav_fp.writeframes(pcm16.tobytes())
-    return path
+    shutil.copyfile(path, temp_path)
+    return temp_path
+
+
+def has_cached_word_audio(text, source_path=None):
+    return os.path.exists(_word_cache_path(text, source_path=source_path))
+
+
+def _set_backend_status(token, label, *, from_cache=False, fallback=False):
+    with _backend_lock:
+        _backend_status[token] = {
+            "label": str(label or ""),
+            "from_cache": bool(from_cache),
+            "fallback": bool(fallback),
+        }
+
+
+def get_backend_status(token):
+    with _backend_lock:
+        data = _backend_status.get(int(token or 0))
+        return dict(data) if isinstance(data, dict) else None
 
 
 def _stop_locked():
@@ -162,25 +131,212 @@ def _show_error_once(message):
         pass
 
 
-def _synthesize_to_wav(text, volume, rate_ratio):
-    voice = get_voice_profile(get_voice_id())
-    voice_id = voice.get("id", "af_heart")
-    lang = (voice.get("languages") or ["en-us"])[0]
-    ratio = max(0.5, min(2.0, float(rate_ratio)))
-    gain = max(0.0, min(1.0, float(volume)))
+def _extract_error_message(http_error):
+    try:
+        raw = http_error.read().decode("utf-8", errors="ignore")
+    except Exception:
+        return str(http_error)
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return raw or str(http_error)
+    error = data.get("error") or {}
+    return str(error.get("message") or data.get("message") or raw or http_error)
 
-    kokoro = _ensure_kokoro()
-    audio, sample_rate = kokoro.create(
-        text=str(text),
-        voice=voice_id,
-        speed=ratio,
-        lang=lang,
-        trim=True,
+
+def _request_gemini_tts(text, *, short_text):
+    api_key = get_gemini_api_key()
+    if not api_key:
+        raise RuntimeError("Gemini API key is empty.")
+
+    prompt = TTS_STYLE_SHORT if short_text else TTS_STYLE_LONG
+    payload = {
+        "contents": [{"parts": [{"text": f"{prompt}\n\nText:\n{text}"}]}],
+        "generationConfig": {
+            "responseModalities": ["AUDIO"],
+            "speechConfig": {
+                "voiceConfig": {
+                    "prebuiltVoiceConfig": {
+                        "voiceName": TTS_VOICE_NAME,
+                    }
+                }
+            },
+        },
+    }
+    req = urllib.request.Request(
+        TTS_URL,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "x-goog-api-key": api_key,
+            "Content-Type": "application/json",
+        },
+        method="POST",
     )
-    import numpy as np
+    try:
+        with urllib.request.urlopen(req, timeout=180) as response:
+            return json.loads(response.read().decode("utf-8", errors="ignore"))
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(_extract_error_message(e)) from e
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"Gemini TTS request failed: {e.reason}") from e
+    except Exception as e:
+        raise RuntimeError(f"Gemini TTS request failed: {e}") from e
 
-    audio = np.asarray(audio, dtype=np.float32) * gain
-    return _write_temp_wav(audio, sample_rate)
+
+def _extract_pcm_bytes(data):
+    candidates = data.get("candidates") or []
+    for candidate in candidates:
+        content = candidate.get("content") or {}
+        for part in content.get("parts") or []:
+            inline = part.get("inlineData") or {}
+            encoded = inline.get("data")
+            mime_type = str(inline.get("mimeType") or "")
+            if encoded and "pcm" in mime_type:
+                return base64.b64decode(encoded)
+    raise RuntimeError("Gemini TTS returned no audio.")
+
+
+def _write_pcm_to_wav_path(pcm_bytes, sample_rate, volume):
+    gain = _clamp(volume, 0.0, 1.0)
+    if gain <= 0.0:
+        pcm_bytes = b""
+    elif abs(gain - 1.0) > 1e-6:
+        import array
+
+        samples = array.array("h")
+        samples.frombytes(pcm_bytes)
+        for idx, sample in enumerate(samples):
+            scaled = int(sample * gain)
+            if scaled > 32767:
+                scaled = 32767
+            elif scaled < -32768:
+                scaled = -32768
+            samples[idx] = scaled
+        pcm_bytes = samples.tobytes()
+
+    fd, path = tempfile.mkstemp(prefix="wordspeaker_", suffix=".wav")
+    os.close(fd)
+    with wave.open(path, "wb") as wav_fp:
+        wav_fp.setnchannels(TTS_CHANNELS)
+        wav_fp.setsampwidth(TTS_SAMPLE_WIDTH)
+        wav_fp.setframerate(sample_rate)
+        wav_fp.writeframes(pcm_bytes)
+    return path
+
+
+def _write_float_audio_to_wav_path(audio, sample_rate, volume):
+    gain = _clamp(volume, 0.0, 1.0)
+    pcm = np.asarray(audio, dtype=np.float32) * gain
+    pcm = np.clip(pcm, -1.0, 1.0)
+    pcm16 = (pcm * 32767.0).astype(np.int16)
+    return _write_pcm_to_wav_path(pcm16.tobytes(), sample_rate=sample_rate, volume=1.0)
+
+
+def _ensure_kokoro():
+    global _kokoro
+    if _kokoro is not None:
+        return _kokoro
+    if not kokoro_ready():
+        model_path, voices_path = get_kokoro_paths()
+        raise RuntimeError(
+            "Kokoro model files are missing.\n"
+            f"Expected:\n{model_path}\n{voices_path}"
+        )
+    with _kokoro_lock:
+        if _kokoro is not None:
+            return _kokoro
+        from kokoro_onnx import Kokoro
+
+        model_path, voices_path = get_kokoro_paths()
+        _kokoro = Kokoro(model_path=model_path, voices_path=voices_path)
+        return _kokoro
+
+
+def _synthesize_with_gemini(text, volume, *, short_text):
+    data = _request_gemini_tts(text, short_text=short_text)
+    pcm_bytes = _extract_pcm_bytes(data)
+    return _write_pcm_to_wav_path(pcm_bytes, sample_rate=TTS_SAMPLE_RATE, volume=volume), "Gemini TTS", True
+
+
+def _synthesize_with_kokoro(text, volume, rate_ratio):
+    kokoro = _ensure_kokoro()
+    voice_id = get_voice_id()
+    profile = get_voice_profile(get_voice_source(), voice_id)
+    lang = str((profile.get("languages") or ["en-GB"])[0]).strip().lower().replace("_", "-")
+    speed = _clamp(rate_ratio, 0.7, 1.4)
+    audio, sample_rate = kokoro.create(text, voice=voice_id, speed=speed, lang=lang)
+    return (
+        _write_float_audio_to_wav_path(audio, sample_rate=sample_rate or KOKORO_SAMPLE_RATE, volume=volume),
+        "Kokoro (Offline)",
+        True,
+    )
+
+
+def _synthesize_with_kokoro_voice(text, volume, rate_ratio, voice_id, lang="en-gb"):
+    kokoro = _ensure_kokoro()
+    speed = _clamp(rate_ratio, 0.7, 1.4)
+    audio, sample_rate = kokoro.create(text, voice=voice_id, speed=speed, lang=lang)
+    return (
+        _write_float_audio_to_wav_path(audio, sample_rate=sample_rate or KOKORO_SAMPLE_RATE, volume=volume),
+        "Kokoro (Offline)",
+        False,
+    )
+
+
+def _synthesize_with_selected_source(text, volume, rate_ratio, *, short_text):
+    source = get_voice_source()
+    if source == SOURCE_KOKORO:
+        return _synthesize_with_kokoro(text, volume=volume, rate_ratio=rate_ratio), False
+
+    try:
+        return _synthesize_with_gemini(text, volume=volume, short_text=short_text), False
+    except Exception:
+        if kokoro_ready():
+            return (
+                _synthesize_with_kokoro_voice(
+                    text,
+                    volume=volume,
+                    rate_ratio=rate_ratio,
+                    voice_id="bf_emma",
+                    lang="en-gb",
+                ),
+                True,
+            )
+        raise
+
+
+def _synthesize_to_wav(text, volume, rate_ratio, *, short_text=False, source_path=None, request_token=None):
+    normalized = _normalize_text(text, ensure_sentence_end=short_text)
+    if not normalized:
+        raise RuntimeError("Text is empty.")
+
+    if short_text:
+        cache_path = _word_cache_path(text, source_path=source_path)
+        if os.path.exists(cache_path):
+            source = get_voice_source()
+            label = "Kokoro (Offline)" if source == SOURCE_KOKORO else "Gemini TTS"
+            if request_token is not None:
+                _set_backend_status(request_token, label, from_cache=True, fallback=False)
+            return _clone_to_temp(cache_path)
+
+    (wav_path, backend_label, can_cache), fallback = _synthesize_with_selected_source(
+        normalized,
+        volume=volume,
+        rate_ratio=rate_ratio,
+        short_text=short_text,
+    )
+
+    if request_token is not None:
+        _set_backend_status(request_token, backend_label, from_cache=False, fallback=fallback)
+
+    if short_text and can_cache:
+        try:
+            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+            shutil.copyfile(wav_path, cache_path)
+        except Exception:
+            pass
+
+    return wav_path
 
 
 def stop():
@@ -188,7 +344,7 @@ def stop():
         _stop_locked()
 
 
-def speak_async(text, volume=1.0, rate_ratio=1.0, cancel_before=False):
+def speak_async(text, volume=1.0, rate_ratio=1.0, cancel_before=False, source_path=None):
     global _token
     if cancel_before:
         stop()
@@ -202,10 +358,14 @@ def speak_async(text, volume=1.0, rate_ratio=1.0, cancel_before=False):
             with _lock:
                 if my_token != _token:
                     return
-            if not _models_ready():
-                _start_model_download_if_needed()
-                raise RuntimeError(_get_kokoro_not_ready_reason())
-            wav_path = _synthesize_to_wav(text=str(text), volume=volume, rate_ratio=rate_ratio)
+            wav_path = _synthesize_to_wav(
+                text=text,
+                volume=volume,
+                rate_ratio=rate_ratio,
+                short_text=True,
+                source_path=source_path,
+                request_token=my_token,
+            )
             with _lock:
                 if my_token != _token:
                     try:
@@ -223,18 +383,18 @@ def speak_async(text, volume=1.0, rate_ratio=1.0, cancel_before=False):
             _show_error_once(str(e))
 
     threading.Thread(target=_run, daemon=True).start()
+    return my_token
 
 
-def _split_long_text(text, chunk_chars=220):
-    raw = re.sub(r"\s+", " ", str(text or "").strip())
+def _split_long_text(text, chunk_chars=1200):
+    raw = _normalize_text(text)
     if not raw:
         return []
 
     sentences = re.split(r"(?<=[.!?;:])\s+", raw)
     chunks = []
     buf = ""
-    limit = max(80, int(chunk_chars))
-
+    limit = max(400, int(chunk_chars))
     for sentence in sentences:
         part = sentence.strip()
         if not part:
@@ -245,33 +405,13 @@ def _split_long_text(text, chunk_chars=220):
             continue
         if buf:
             chunks.append(buf)
-            buf = ""
-        if len(part) <= limit:
-            buf = part
-            continue
-
-        words = part.split(" ")
-        inner = ""
-        for w in words:
-            c2 = f"{inner} {w}".strip() if inner else w
-            if len(c2) <= limit:
-                inner = c2
-            else:
-                if inner:
-                    chunks.append(inner)
-                inner = w
-        if inner:
-            buf = inner
-
+        buf = part
     if buf:
         chunks.append(buf)
     return chunks
 
 
 def speak_stream_async(text, volume=1.0, rate_ratio=1.0, cancel_before=False, chunk_chars=220):
-    """
-    Speak long text in chunks so playback can start faster than one-shot synthesis.
-    """
     global _token
     if cancel_before:
         stop()
@@ -285,87 +425,84 @@ def speak_stream_async(text, volume=1.0, rate_ratio=1.0, cancel_before=False, ch
             with _lock:
                 if my_token != _token:
                     return
-            if not _models_ready():
-                _start_model_download_if_needed()
-                raise RuntimeError(_get_kokoro_not_ready_reason())
-
-            chunks = _split_long_text(text, chunk_chars=chunk_chars)
+            chunks = _split_long_text(text, chunk_chars=max(400, int(chunk_chars)))
             if not chunks:
                 return
-
-            _stop_locked()
-            wav_queue = queue.Queue(maxsize=2)
-            sentinel = object()
-
-            def _queue_put(item):
-                while True:
-                    with _lock:
-                        if my_token != _token:
-                            return False
-                    try:
-                        wav_queue.put(item, timeout=0.2)
-                        return True
-                    except queue.Full:
-                        continue
-
-            def _producer():
-                try:
-                    for chunk in chunks:
-                        with _lock:
-                            if my_token != _token:
-                                return
-                        wav_path = _synthesize_to_wav(text=chunk, volume=volume, rate_ratio=rate_ratio)
-                        if not _queue_put(wav_path):
-                            try:
-                                os.remove(wav_path)
-                            except Exception:
-                                pass
-                            return
-                except Exception as e:
-                    _queue_put(e)
-                finally:
-                    _queue_put(sentinel)
-
-            threading.Thread(target=_producer, daemon=True).start()
-
-            while True:
-                with _lock:
-                    if my_token != _token:
-                        return
-                try:
-                    item = wav_queue.get(timeout=0.2)
-                except queue.Empty:
-                    continue
-
-                if item is sentinel:
-                    return
-                if isinstance(item, Exception):
-                    raise item
-
-                wav_path = item
-                with _lock:
-                    if my_token != _token:
-                        try:
-                            os.remove(wav_path)
-                        except Exception:
-                            pass
-                        return
-                    _current_wav = wav_path
-                winsound.PlaySound(
-                    wav_path,
-                    winsound.SND_FILENAME | winsound.SND_NODEFAULT,
+            wav_paths = []
+            fallback = False
+            if get_voice_source() == SOURCE_KOKORO:
+                backend_label = "Kokoro (Offline)"
+                synth_mode = "kokoro"
+            else:
+                first_result, fallback = _synthesize_with_selected_source(
+                    chunks[0],
+                    volume=volume,
+                    rate_ratio=rate_ratio,
+                    short_text=False,
                 )
+                first_path, backend_label, _can_cache = first_result
+                wav_paths.append(first_path)
+                synth_mode = "kokoro" if fallback else "gemini"
+                if my_token is not None:
+                    _set_backend_status(my_token, backend_label, from_cache=False, fallback=fallback)
+
+            start_index = 0 if get_voice_source() == SOURCE_KOKORO else 1
+            for chunk in chunks[start_index:]:
                 with _lock:
-                    if _current_wav == wav_path:
-                        _current_wav = None
+                    if my_token != _token:
+                        return
+                if synth_mode == "kokoro":
+                    wav_path, _label, _can_cache = _synthesize_with_kokoro_voice(
+                        chunk,
+                        volume=volume,
+                        rate_ratio=rate_ratio,
+                        voice_id="bf_emma",
+                        lang="en-gb",
+                    )
+                else:
+                    wav_path, _label, _can_cache = _synthesize_with_gemini(
+                        chunk,
+                        volume=volume,
+                        short_text=False,
+                    )
+                wav_paths.append(wav_path)
+
+            if get_voice_source() == SOURCE_KOKORO:
+                _set_backend_status(my_token, backend_label, from_cache=False, fallback=False)
+
+            fd, merged_path = tempfile.mkstemp(prefix="wordspeaker_", suffix=".wav")
+            os.close(fd)
+            with wave.open(merged_path, "wb") as out_fp:
+                out_fp.setnchannels(TTS_CHANNELS)
+                out_fp.setsampwidth(TTS_SAMPLE_WIDTH)
+                out_fp.setframerate(TTS_SAMPLE_RATE)
+                for wav_path in wav_paths:
+                    with wave.open(wav_path, "rb") as in_fp:
+                        out_fp.writeframes(in_fp.readframes(in_fp.getnframes()))
+            for wav_path in wav_paths:
                 try:
                     os.remove(wav_path)
                 except Exception:
                     pass
+
+            with _lock:
+                if my_token != _token:
+                    try:
+                        os.remove(merged_path)
+                    except Exception:
+                        pass
+                    return
+                _stop_locked()
+                _current_wav = merged_path
+            winsound.PlaySound(
+                merged_path,
+                winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT,
+            )
         except Exception as e:
             _show_error_once(str(e))
 
     threading.Thread(target=_run, daemon=True).start()
+    return my_token
 
 
 def cancel_all():
@@ -376,18 +513,8 @@ def cancel_all():
 
 
 def prepare_async():
-    """Preload models/engine in background to reduce first-play latency."""
+    return None
 
-    def _run():
-        try:
-            if not _models_ready():
-                _start_model_download_if_needed()
-                return
-            kokoro = _ensure_kokoro()
-            # Warm-up one short inference so first real play feels instant.
-            kokoro.create("hello", voice="af_heart", speed=1.0, lang="en-us", trim=True)
-        except Exception:
-            # Startup warm-up should stay silent; actual play will surface errors.
-            return
 
-    threading.Thread(target=_run, daemon=True).start()
+def get_runtime_label():
+    return "Kokoro (Offline)" if get_voice_source() == SOURCE_KOKORO else "Gemini API"

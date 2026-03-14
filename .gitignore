@@ -15,3 +15,6 @@ data/word_stats.json
 data/models/
 data/translation_cache.json
 data/corpus_index.db
+data/audio_cache/
+.*.wordspeaker_audio/
+vendor/
