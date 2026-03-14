@@ -128,6 +128,26 @@ def _update_translation_cache(pairs):
     return changed
 
 
+def set_cached_translation(word, zh_text):
+    key = _normalize_cache_key(word)
+    if not key:
+        return False
+    value = str(zh_text or "").strip()
+    with _lock:
+        cache = _load_cache_locked()
+        changed = False
+        if value:
+            if cache.get(key) != value:
+                cache[key] = value
+                changed = True
+        elif key in cache:
+            cache.pop(key, None)
+            changed = True
+        if changed:
+            _save_cache_locked()
+    return True
+
+
 def prepare_async():
     global _prepare_started
     with _lock:

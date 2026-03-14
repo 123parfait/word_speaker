@@ -1,4 +1,5 @@
 argostranslate
+piper-tts
 spacy
 spacy-lookups-data
 python-docx

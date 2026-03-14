@@ -16,8 +16,14 @@ import numpy as np
 from tkinter import messagebox
 
 from services.app_config import get_gemini_api_key
-from services.voice_catalog import get_kokoro_paths, get_voice_profile, kokoro_ready
-from services.voice_manager import SOURCE_GEMINI, SOURCE_KOKORO, get_voice_id, get_voice_source
+from services.voice_catalog import (
+    get_kokoro_paths,
+    get_piper_voice_profile,
+    get_voice_profile,
+    kokoro_ready,
+    piper_ready,
+)
+from services.voice_manager import SOURCE_GEMINI, SOURCE_KOKORO, SOURCE_PIPER, get_voice_id, get_voice_source
 
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -30,6 +36,8 @@ _shown_errors = set()
 _current_wav = None
 _kokoro = None
 _kokoro_lock = threading.Lock()
+_piper_voices = {}
+_piper_lock = threading.Lock()
 _backend_lock = threading.Lock()
 _backend_status = {}
 
@@ -252,6 +260,28 @@ def _ensure_kokoro():
         return _kokoro
 
 
+def _ensure_piper_voice(voice_id=None):
+    voice_key = str(voice_id or get_voice_id() or "").strip()
+    if not voice_key:
+        raise RuntimeError("Piper voice id is empty.")
+    with _piper_lock:
+        if voice_key in _piper_voices:
+            return _piper_voices[voice_key]
+    if not piper_ready():
+        raise RuntimeError("Piper is not ready. Add a Piper model under data/models/piper.")
+    profile = get_piper_voice_profile(voice_key)
+    model_path = str(profile.get("model_path") or "").strip()
+    config_path = str(profile.get("config_path") or "").strip()
+    if not model_path or not config_path:
+        raise RuntimeError("Piper model files are missing or incomplete.")
+    from piper import PiperVoice
+
+    voice = PiperVoice.load(model_path=model_path, config_path=config_path)
+    with _piper_lock:
+        _piper_voices[voice_key] = voice
+    return voice
+
+
 def _synthesize_with_gemini(text, volume, *, short_text):
     data = _request_gemini_tts(text, short_text=short_text)
     pcm_bytes = _extract_pcm_bytes(data)
@@ -283,10 +313,28 @@ def _synthesize_with_kokoro_voice(text, volume, rate_ratio, voice_id, lang="en-g
     )
 
 
+def _synthesize_with_piper(text, volume, rate_ratio):
+    if not piper_ready():
+        raise RuntimeError("Piper is not ready. Add a Piper model under data/models/piper.")
+    voice = _ensure_piper_voice(get_voice_id())
+    from piper import SynthesisConfig
+
+    speed = _clamp(rate_ratio, 0.7, 1.4)
+    syn_config = SynthesisConfig(length_scale=max(0.1, 1.0 / speed), volume=_clamp(volume, 0.0, 1.0))
+    audio_chunks = list(voice.synthesize(str(text or ""), syn_config=syn_config))
+    if not audio_chunks:
+        raise RuntimeError("Piper returned no audio.")
+    audio = np.concatenate([chunk.audio_float_array for chunk in audio_chunks])
+    sample_rate = int(audio_chunks[0].sample_rate or TTS_SAMPLE_RATE)
+    return _write_float_audio_to_wav_path(audio, sample_rate=sample_rate, volume=1.0), "Piper (Local)", True
+
+
 def _synthesize_with_selected_source(text, volume, rate_ratio, *, short_text):
     source = get_voice_source()
     if source == SOURCE_KOKORO:
         return _synthesize_with_kokoro(text, volume=volume, rate_ratio=rate_ratio), False
+    if source == SOURCE_PIPER:
+        return _synthesize_with_piper(text, volume=volume, rate_ratio=rate_ratio), False
 
     try:
         return _synthesize_with_gemini(text, volume=volume, short_text=short_text), False
@@ -512,9 +560,73 @@ def cancel_all():
         _stop_locked()
 
 
+def precache_word_audio_async(words, source_path=None, rate_ratio=1.0, on_progress=None, on_done=None):
+    items = []
+    seen = set()
+    for word in words or []:
+        text = _normalize_text(word, ensure_sentence_end=False)
+        if not text:
+            continue
+        key = text.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append(text)
+
+    def _emit_progress(done_count, total_count, current_text):
+        if callable(on_progress):
+            try:
+                on_progress(done_count, total_count, current_text)
+            except Exception:
+                pass
+
+    def _emit_done(success_count, skipped_count, error_count):
+        if callable(on_done):
+            try:
+                on_done(success_count, skipped_count, error_count)
+            except Exception:
+                pass
+
+    def _run():
+        success_count = 0
+        skipped_count = 0
+        error_count = 0
+        total_count = len(items)
+        for index, text in enumerate(items, start=1):
+            if has_cached_word_audio(text, source_path=source_path):
+                skipped_count += 1
+                _emit_progress(index, total_count, text)
+                continue
+            try:
+                wav_path = _synthesize_to_wav(
+                    text=text,
+                    volume=1.0,
+                    rate_ratio=rate_ratio,
+                    short_text=True,
+                    source_path=source_path,
+                    request_token=None,
+                )
+                success_count += 1
+                try:
+                    os.remove(wav_path)
+                except Exception:
+                    pass
+            except Exception:
+                error_count += 1
+            _emit_progress(index, total_count, text)
+        _emit_done(success_count, skipped_count, error_count)
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
 def prepare_async():
     return None
 
 
 def get_runtime_label():
-    return "Kokoro (Offline)" if get_voice_source() == SOURCE_KOKORO else "Gemini API"
+    source = get_voice_source()
+    if source == SOURCE_KOKORO:
+        return "Kokoro (Offline)"
+    if source == SOURCE_PIPER:
+        return "Piper (Local)"
+    return "Gemini API"

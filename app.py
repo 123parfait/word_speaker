@@ -59,6 +59,30 @@ def init_style(root):
     )
     style.configure("TCheckbutton", background="#f6f7fb")
     style.configure("TRadiobutton", background="#f6f7fb")
+    style.configure(
+        "WordList.Treeview",
+        background="#ffffff",
+        fieldbackground="#ffffff",
+        foreground="#2b2f36",
+        rowheight=70,
+        font=("Segoe UI", 13),
+        borderwidth=0,
+        relief="flat",
+    )
+    style.map(
+        "WordList.Treeview",
+        background=[("selected", "#d9e8ff")],
+        foreground=[("selected", "#1b2736")],
+    )
+    style.configure(
+        "WordList.Treeview.Heading",
+        background="#f8fafc",
+        foreground="#6b7280",
+        font=("Segoe UI", 9, "bold"),
+        padding=(6, 6),
+        borderwidth=0,
+        relief="flat",
+    )
 
 
 def main():

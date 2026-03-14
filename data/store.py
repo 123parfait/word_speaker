@@ -12,6 +12,7 @@ class WordStore:
         self.current_source_path = None
         self.history_path = os.path.join(os.path.dirname(__file__), "history.json")
         self.stats_path = os.path.join(os.path.dirname(__file__), "word_stats.json")
+        self.dictation_stats_path = os.path.join(os.path.dirname(__file__), "dictation_stats.json")
 
     def clear(self):
         self.words = []
@@ -142,6 +143,75 @@ class WordStore:
                 json.dump(stats, f, ensure_ascii=False, indent=2)
         except Exception:
             pass
+
+    def load_dictation_stats(self):
+        if not os.path.exists(self.dictation_stats_path):
+            return {}
+        try:
+            with open(self.dictation_stats_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+        return {}
+
+    def save_dictation_stats(self, stats):
+        try:
+            with open(self.dictation_stats_path, "w", encoding="utf-8") as f:
+                json.dump(stats or {}, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    def record_dictation_result(self, word, user_input, correct):
+        token = str(word or "").strip()
+        if not token:
+            return
+        stats = self.load_dictation_stats()
+        entry = stats.get(token)
+        if not isinstance(entry, dict):
+            entry = {
+                "wrong_count": 0,
+                "correct_count": 0,
+                "last_wrong_input": "",
+                "last_result": "",
+                "last_seen": "",
+            }
+        if correct:
+            entry["correct_count"] = int(entry.get("correct_count", 0) or 0) + 1
+            entry["last_result"] = "correct"
+        else:
+            entry["wrong_count"] = int(entry.get("wrong_count", 0) or 0) + 1
+            entry["last_wrong_input"] = str(user_input or "").strip()
+            entry["last_result"] = "wrong"
+        entry["last_seen"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        stats[token] = entry
+        self.save_dictation_stats(stats)
+
+    def recent_wrong_words(self, words=None, limit=50):
+        stats = self.load_dictation_stats()
+        allowed = {str(word or "").strip() for word in (words or []) if str(word or "").strip()}
+        items = []
+        for word, entry in stats.items():
+            if allowed and word not in allowed:
+                continue
+            if not isinstance(entry, dict):
+                continue
+            wrong_count = int(entry.get("wrong_count", 0) or 0)
+            if wrong_count <= 0:
+                continue
+            items.append(
+                {
+                    "word": word,
+                    "wrong_count": wrong_count,
+                    "correct_count": int(entry.get("correct_count", 0) or 0),
+                    "last_wrong_input": str(entry.get("last_wrong_input") or ""),
+                    "last_result": str(entry.get("last_result") or ""),
+                    "last_seen": str(entry.get("last_seen") or ""),
+                }
+            )
+        items.sort(key=lambda item: (item.get("last_seen", ""), item.get("wrong_count", 0)), reverse=True)
+        return items[: max(1, int(limit or 50))]
 
     def add_history(self, path):
         history = self.load_history()
