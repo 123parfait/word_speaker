@@ -6,9 +6,20 @@ from pathlib import Path
 _CONFIG_PATH = Path(__file__).resolve().parent.parent / "data" / "app_config.json"
 _DEFAULT_CONFIG = {
     "gemini_api_key": "",
+    "llm_api_provider": "gemini",
+    "llm_api_key": "",
+    "tts_api_provider": "gemini",
+    "tts_api_key": "",
     "gemini_model": "gemini-2.5-flash",
     "ui_language": "zh",
 }
+
+
+def _normalize_tts_provider(provider):
+    value = str(provider or "").strip().lower()
+    if value == "elevenlabs":
+        return "elevenlabs"
+    return "gemini"
 
 
 def load_config():
@@ -23,6 +34,13 @@ def load_config():
         return dict(_DEFAULT_CONFIG)
     merged = dict(_DEFAULT_CONFIG)
     merged.update(data)
+    legacy_key = str(merged.get("gemini_api_key") or "").strip()
+    if not str(merged.get("llm_api_key") or "").strip() and legacy_key:
+        merged["llm_api_key"] = legacy_key
+    if not str(merged.get("tts_api_key") or "").strip() and legacy_key:
+        merged["tts_api_key"] = legacy_key
+    merged["llm_api_provider"] = "gemini" if str(merged.get("llm_api_provider") or "").strip().lower() == "gemini" else "gemini"
+    merged["tts_api_provider"] = _normalize_tts_provider(merged.get("tts_api_provider"))
     return merged
 
 
@@ -36,12 +54,58 @@ def save_config(config):
 
 
 def get_gemini_api_key():
-    return str(load_config().get("gemini_api_key") or "").strip()
+    return get_llm_api_key()
 
 
 def set_gemini_api_key(api_key):
+    set_llm_api_key(api_key)
+
+
+def get_llm_api_provider():
+    return str(load_config().get("llm_api_provider") or "gemini").strip().lower() or "gemini"
+
+
+def set_llm_api_provider(provider):
     config = load_config()
-    config["gemini_api_key"] = str(api_key or "").strip()
+    config["llm_api_provider"] = "gemini" if str(provider or "").strip().lower() == "gemini" else "gemini"
+    save_config(config)
+
+
+def get_llm_api_key():
+    config = load_config()
+    return str(config.get("llm_api_key") or config.get("gemini_api_key") or "").strip()
+
+
+def set_llm_api_key(api_key):
+    config = load_config()
+    value = str(api_key or "").strip()
+    config["llm_api_key"] = value
+    if not str(config.get("gemini_api_key") or "").strip():
+        config["gemini_api_key"] = value
+    save_config(config)
+
+
+def get_tts_api_provider():
+    return _normalize_tts_provider(load_config().get("tts_api_provider"))
+
+
+def set_tts_api_provider(provider):
+    config = load_config()
+    config["tts_api_provider"] = _normalize_tts_provider(provider)
+    save_config(config)
+
+
+def get_tts_api_key():
+    config = load_config()
+    return str(config.get("tts_api_key") or config.get("gemini_api_key") or "").strip()
+
+
+def set_tts_api_key(api_key):
+    config = load_config()
+    value = str(api_key or "").strip()
+    config["tts_api_key"] = value
+    if not str(config.get("gemini_api_key") or "").strip():
+        config["gemini_api_key"] = value
     save_config(config)
 
 

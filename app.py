@@ -1,4 +1,8 @@
 # -*- coding: utf-8 -*-
+import atexit
+import ctypes
+import os
+import msvcrt
 import sys
 import tkinter as tk
 from pathlib import Path
@@ -16,6 +20,63 @@ def init_runtime_paths():
 init_runtime_paths()
 
 from ui.main_view import MainView
+
+
+class SingleInstanceGuard:
+    def __init__(self, lock_path):
+        self.lock_path = str(lock_path)
+        self._fh = None
+
+    def acquire(self):
+        os.makedirs(os.path.dirname(self.lock_path), exist_ok=True)
+        self._fh = open(self.lock_path, "a+b")
+        try:
+            self._fh.seek(0)
+            msvcrt.locking(self._fh.fileno(), msvcrt.LK_NBLCK, 1)
+            self._fh.seek(0)
+            self._fh.truncate()
+            self._fh.write(str(os.getpid()).encode("utf-8"))
+            self._fh.flush()
+            return True
+        except OSError:
+            return False
+
+    def release(self):
+        if not self._fh:
+            return
+        try:
+            self._fh.seek(0)
+            msvcrt.locking(self._fh.fileno(), msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+        try:
+            self._fh.close()
+        except Exception:
+            pass
+        self._fh = None
+
+
+_INSTANCE_GUARD = None
+
+
+def ensure_single_instance():
+    global _INSTANCE_GUARD
+    lock_path = Path(__file__).resolve().parent / "data" / "app.instance.lock"
+    guard = SingleInstanceGuard(lock_path)
+    if guard.acquire():
+        _INSTANCE_GUARD = guard
+        atexit.register(guard.release)
+        return True
+    try:
+        ctypes.windll.user32.MessageBoxW(
+            None,
+            "Word Speaker is already running.\n\nPlease close the existing window first.",
+            "Word Speaker",
+            0x00000010,
+        )
+    except Exception:
+        pass
+    return False
 
 
 def init_style(root):
@@ -86,6 +147,8 @@ def init_style(root):
 
 
 def main():
+    if not ensure_single_instance():
+        return
     root = tk.Tk()
     root.title("Word Speaker")
     root.geometry("1480x860")

@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 from pathlib import Path
 
+from services.app_config import get_tts_api_provider
+
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 KOKORO_DIR = BASE_DIR / "data" / "models" / "kokoro"
@@ -80,11 +82,12 @@ def get_piper_placeholder_voice():
 
 
 def list_system_voices():
+    online_name = "ElevenLabs TTS" if get_tts_api_provider() == "elevenlabs" else "Gemini TTS (UK)"
     voices = [
         {
             "source": "gemini",
             "id": "gemini-kore",
-            "name": "Gemini TTS (UK)",
+            "name": online_name,
             "languages": ["en-GB"],
         },
     ]

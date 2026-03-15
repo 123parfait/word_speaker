@@ -3,6 +3,7 @@ import os
 import queue
 import random
 import re
+import time
 import unicodedata
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -13,6 +14,7 @@ from services.tts import (
     speak_stream_async,
     cancel_all as tts_cancel_all,
     cleanup_cache_for_source_path as tts_cleanup_cache_for_source_path,
+    cleanup_word_audio_cache as tts_cleanup_word_audio_cache,
     cleanup_manual_session_cache as tts_cleanup_manual_session_cache,
     get_recent_wrong_cache_source as tts_get_recent_wrong_cache_source,
     get_word_audio_cache_info as tts_get_word_audio_cache_info,
@@ -20,7 +22,11 @@ from services.tts import (
     precache_word_audio_async,
     prepare_async as tts_prepare_async,
     queue_word_audio_generation as tts_queue_word_audio_generation,
+    rename_cache_source_path as tts_rename_cache_source_path,
+    rebind_manual_session_cache_to_source as tts_rebind_manual_session_cache_to_source,
+    set_preferred_pending_source as tts_set_preferred_pending_source,
     get_backend_status as tts_get_backend_status,
+    get_gemini_queue_status as tts_get_gemini_queue_status,
     get_runtime_label as tts_get_runtime_label,
     has_cached_word_audio as tts_has_cached_word_audio,
 )
@@ -37,11 +43,17 @@ from services.word_analysis import (
 from services.synonyms import get_synonyms as get_local_synonyms
 from services.ielts_passage import build_ielts_listening_passage
 from services.app_config import (
-    get_gemini_api_key,
+    get_llm_api_key,
+    get_llm_api_provider,
     get_generation_model,
+    get_tts_api_key,
+    get_tts_api_provider,
     get_ui_language,
-    set_gemini_api_key,
+    set_llm_api_key,
+    set_llm_api_provider,
     set_generation_model,
+    set_tts_api_key,
+    set_tts_api_provider,
     set_ui_language,
 )
 from services.gemini_writer import (
@@ -52,6 +64,7 @@ from services.gemini_writer import (
     list_available_gemini_models,
     validate_gemini_api_key,
 )
+from services.tts import validate_tts_api_key
 from services.voice_catalog import kokoro_ready, list_system_voices, piper_ready
 from services.voice_manager import (
     SOURCE_GEMINI,
@@ -108,6 +121,13 @@ UI_TEXTS = {
         "tools": "工具",
         "open_history": "打开历史",
         "delete_history": "从历史中删除",
+        "rename_history_file": "重命名文件",
+        "rename_history_prompt": "输入新的文件名：",
+        "rename_history_invalid": "请输入有效的文件名，不要包含路径。",
+        "rename_history_exists": "目标文件已存在，请换一个名字。",
+        "rename_history_missing": "源文件不存在，无法重命名。",
+        "rename_history_done": "已重命名为 {name}，并迁移 {count} 个缓存项，更新 {queued} 个等待任务。",
+        "rename_history_failed": "重命名失败：{error}",
         "open_tools": "打开工具",
         "study_focus": "学习焦点",
         "no_history": "还没有历史记录。",
@@ -125,7 +145,25 @@ UI_TEXTS = {
         "order": "顺序",
         "speed": "速度",
         "volume": "音量",
-        "gemini_api_key": "Gemini API Key",
+        "gemini_api_key": "大模型 API",
+        "llm_api": "大模型 API",
+        "tts_api": "TTS API",
+        "api_provider": "提供方",
+        "provider_gemini": "Gemini",
+        "provider_elevenlabs": "ElevenLabs",
+        "llm_api_setup": "大模型 API 设置",
+        "llm_key_desc": "用于文章生成、例句生成等 AI 功能。当前实现支持 Gemini。",
+        "tts_api_setup": "TTS API 设置",
+        "tts_key_desc": "用于在线语音生成。当前实现支持 Gemini TTS 和 ElevenLabs。ElevenLabs 默认使用偏英式的标准发音。",
+        "tts_api_key_error": "TTS API Key 错误",
+        "paste_tts_key_first": "请先粘贴 TTS API Key。",
+        "tts_status_normal": "{provider} 正常",
+        "tts_status_limited": "{provider} 限流中",
+        "tts_status_error": "{provider} 错误",
+        "tts_status_idle": "{provider} 空闲",
+        "tts_status_retry_at": "下次请求时间：{time}",
+        "tts_status_retry_none": "下次请求时间：-",
+        "tts_status_queue": "等待队列：{count}",
         "order_desc": "选择顺序、随机不重复，或点击播放。",
         "stop_after_list": "播完整个列表后停止",
         "speed_desc": "间隔：单词与单词之间的时间。",
@@ -177,16 +215,16 @@ UI_TEXTS = {
         "indexed_documents": "已索引文档",
         "clear_filter": "清除筛选",
         "passage_title": "IELTS 听力风格篇章",
-        "passage_desc": "用 Gemini 生成篇章并朗读。如果只想用部分单词，请先在主表里选中。",
+        "passage_desc": "用 Gemini 生成篇章，并用当前在线 TTS 朗读。如果只想用部分单词，请先在主表里选中。",
         "generate": "生成",
-        "read_with_gemini": "用 Gemini TTS 朗读",
+        "read_with_gemini": "用在线 TTS 朗读",
         "stop": "停止",
         "practice": "练习",
         "check": "检查",
         "model": "模型：",
         "practice_tip": "练习：每行按顺序填写一个缺失单词或词组。",
-        "gemini_api_setup": "Gemini API 设置",
-        "gemini_key_desc": "粘贴你自己的 Gemini API Key。程序会先测试，再启用 AI 功能。",
+        "gemini_api_setup": "大模型 API 设置",
+        "gemini_key_desc": "粘贴你的大模型 API Key。程序会先测试，再启用 AI 功能。当前实现支持 Gemini。",
         "gemini_model_desc": "用于文章生成和例句生成的模型：",
         "test_and_save": "测试并保存",
         "exit": "退出",
@@ -222,7 +260,7 @@ UI_TEXTS = {
         "find_error": "检索错误",
         "find_setup_error": "检索初始化错误",
         "import_warning": "导入警告",
-        "gemini_api_key_error": "Gemini API Key 错误",
+        "gemini_api_key_error": "大模型 API Key 错误",
         "audio_cache_info_title": "音频缓存信息",
         "generate_error": "生成错误",
         "sentence_error": "例句错误",
@@ -240,7 +278,7 @@ UI_TEXTS = {
         "generate_passage_first": "请先生成篇章。",
         "no_keywords_for_practice": "这篇文章里没有适合做练习的关键词。",
         "click_practice_first": "请先点击 Practice。",
-        "paste_gemini_key_first": "请先粘贴 Gemini API Key。",
+        "paste_gemini_key_first": "请先粘贴大模型 API Key。",
         "passage_empty": "篇章为空。",
         "valid_number_needed": "请输入有效数字（>= 0.2）。",
         "click_word_first_mode": "点击播放模式下，请先点一个单词。",
@@ -313,6 +351,13 @@ UI_TEXTS = {
         "tools": "Tools",
         "open_history": "Open History",
         "delete_history": "Remove From History",
+        "rename_history_file": "Rename File",
+        "rename_history_prompt": "Enter a new file name:",
+        "rename_history_invalid": "Enter a valid file name without any path separators.",
+        "rename_history_exists": "A file with that name already exists.",
+        "rename_history_missing": "The source file no longer exists.",
+        "rename_history_done": "Renamed to {name}. Migrated {count} cache items and updated {queued} pending tasks.",
+        "rename_history_failed": "Rename failed: {error}",
         "open_tools": "Open Tools",
         "study_focus": "Study Focus",
         "no_history": "No history yet.",
@@ -330,7 +375,25 @@ UI_TEXTS = {
         "order": "Order",
         "speed": "Speed",
         "volume": "Volume",
-        "gemini_api_key": "Gemini API Key",
+        "gemini_api_key": "LLM API",
+        "llm_api": "LLM API",
+        "tts_api": "TTS API",
+        "api_provider": "Provider",
+        "provider_gemini": "Gemini",
+        "provider_elevenlabs": "ElevenLabs",
+        "llm_api_setup": "LLM API setup",
+        "llm_key_desc": "Used for passage generation, sentence generation, and other AI features. Gemini is currently implemented.",
+        "tts_api_setup": "TTS API setup",
+        "tts_key_desc": "Used for online speech synthesis. Gemini TTS and ElevenLabs are currently implemented. ElevenLabs defaults to a British-style standard voice.",
+        "tts_api_key_error": "TTS API Key Error",
+        "paste_tts_key_first": "Please paste a TTS API key first.",
+        "tts_status_normal": "{provider} OK",
+        "tts_status_limited": "{provider} Rate Limited",
+        "tts_status_error": "{provider} Error",
+        "tts_status_idle": "{provider} Idle",
+        "tts_status_retry_at": "Next request: {time}",
+        "tts_status_retry_none": "Next request: -",
+        "tts_status_queue": "Queue: {count}",
         "order_desc": "Choose in-order, random (no repeat), or click-to-play.",
         "stop_after_list": "Stop after list (no repeat list)",
         "speed_desc": "Interval: time between words.",
@@ -382,16 +445,16 @@ UI_TEXTS = {
         "indexed_documents": "Indexed Documents",
         "clear_filter": "Clear Filter",
         "passage_title": "IELTS Listening Style Passage",
-        "passage_desc": "Generate with Gemini API and read it with Gemini TTS. Select words in the main table first if you only want part of the list.",
+        "passage_desc": "Generate with the Gemini LLM and read it with the current online TTS. Select words in the main table first if you only want part of the list.",
         "generate": "Generate",
-        "read_with_gemini": "Read with Gemini TTS",
+        "read_with_gemini": "Read with Online TTS",
         "stop": "Stop",
         "practice": "Practice",
         "check": "Check",
         "model": "Model:",
         "practice_tip": "Practice: fill one missing word/phrase per line (in order).",
-        "gemini_api_setup": "Gemini API setup",
-        "gemini_key_desc": "Paste your own Gemini API key. The app will test it before enabling AI features.",
+        "gemini_api_setup": "LLM API setup",
+        "gemini_key_desc": "Paste your LLM API key. The app will test it before enabling AI features. Gemini is currently implemented.",
         "gemini_model_desc": "Model used for article generation and sentence generation:",
         "test_and_save": "Test and Save",
         "exit": "Exit",
@@ -427,7 +490,7 @@ UI_TEXTS = {
         "find_error": "Find Error",
         "find_setup_error": "Find Setup Error",
         "import_warning": "Import Warning",
-        "gemini_api_key_error": "Gemini API Key Error",
+        "gemini_api_key_error": "LLM API Key Error",
         "audio_cache_info_title": "Audio Cache Info",
         "generate_error": "Generate Error",
         "sentence_error": "Sentence Error",
@@ -445,7 +508,7 @@ UI_TEXTS = {
         "generate_passage_first": "Generate a passage first.",
         "no_keywords_for_practice": "No suitable keywords found in this passage for practice.",
         "click_practice_first": "Click Practice first.",
-        "paste_gemini_key_first": "Please paste a Gemini API key first.",
+        "paste_gemini_key_first": "Please paste an LLM API key first.",
         "passage_empty": "Passage is empty.",
         "valid_number_needed": "Please enter a valid number (>=0.2).",
         "click_word_first_mode": "Click a word first in Click-to-play mode.",
@@ -603,11 +666,20 @@ class MainView(ttk.Frame):
         self.gemini_model_var = tk.StringVar(value=get_generation_model() or DEFAULT_GEMINI_MODEL)
         self.gemini_model_combo = None
         self.gemini_model_values = []
+        self.llm_api_provider_var = tk.StringVar(value=self.tr("provider_gemini"))
+        self.tts_api_provider_var = tk.StringVar(value=self._tts_provider_label(get_tts_api_provider()))
         self.gemini_verified = False
         self.gemini_key_window = None
-        self.gemini_key_var = tk.StringVar(value=get_gemini_api_key())
-        self.gemini_key_status_var = tk.StringVar(value="Paste your Gemini API key, then test it.")
+        self.gemini_key_var = tk.StringVar(value=get_llm_api_key())
+        self.gemini_key_status_var = tk.StringVar(value="Paste your LLM API key, then test it.")
+        self.tts_key_window = None
+        self.tts_key_var = tk.StringVar(value=get_tts_api_key())
+        self.tts_key_status_var = tk.StringVar(value="Paste your TTS API key, then test it.")
+        self.gemini_runtime_status_var = tk.StringVar(value="")
+        self.gemini_retry_status_var = tk.StringVar(value="")
+        self.gemini_status_after = None
         self.gemini_key_test_btn = None
+        self.tts_key_test_btn = None
         self.gemini_validation_token = 0
         self.gemini_validation_active_token = 0
         self.gemini_validation_queue = queue.Queue()
@@ -729,6 +801,24 @@ class MainView(ttk.Frame):
             return self.tr(key).format(**kwargs)
         except Exception:
             return self.tr(key)
+
+    def _tts_provider_options(self):
+        return {
+            self.tr("provider_gemini"): "gemini",
+            self.tr("provider_elevenlabs"): "elevenlabs",
+        }
+
+    def _tts_provider_label(self, provider=None):
+        provider_key = str(provider or get_tts_api_provider() or "gemini").strip().lower()
+        return self.tr("provider_elevenlabs") if provider_key == "elevenlabs" else self.tr("provider_gemini")
+
+    def _tts_provider_value(self):
+        value = str(self.tts_api_provider_var.get() or "").strip()
+        return self._tts_provider_options().get(value, "elevenlabs" if value.lower() == "elevenlabs" else "gemini")
+
+    def _sync_provider_vars(self):
+        self.llm_api_provider_var.set(self.tr("provider_gemini"))
+        self.tts_api_provider_var.set(self._tts_provider_label(get_tts_api_provider()))
 
     def show_info(self, key, **kwargs):
         messagebox.showinfo(self.tr("info"), self.trf(key, **kwargs))
@@ -886,7 +976,7 @@ class MainView(ttk.Frame):
         self.right.grid_columnconfigure(0, weight=1)
 
         self.detail_card = ttk.Frame(self.right, style="Card.TFrame")
-        self.detail_card.grid(row=0, column=0, padx=12, pady=(12, 8), sticky="nsew")
+        self.detail_card.grid(row=0, column=0, padx=12, pady=(12, 6), sticky="ew")
         self.detail_card.grid_columnconfigure(0, weight=1)
 
         ttk.Label(self.detail_card, text=self.tr("current_word"), style="Card.TLabel").grid(
@@ -911,7 +1001,7 @@ class MainView(ttk.Frame):
             foreground="#4b5563",
             wraplength=420,
             justify="left",
-        ).grid(row=3, column=0, padx=12, pady=(6, 0), sticky="w")
+        ).grid(row=3, column=0, padx=12, pady=(4, 0), sticky="w")
         ttk.Label(
             self.detail_card,
             textvariable=self.detail_meta_var,
@@ -919,34 +1009,7 @@ class MainView(ttk.Frame):
             foreground="#667085",
             wraplength=420,
             justify="left",
-        ).grid(row=4, column=0, padx=12, pady=(6, 10), sticky="w")
-
-        detail_actions = ttk.Frame(self.detail_card, style="Card.TFrame")
-        detail_actions.grid(row=5, column=0, padx=12, pady=(0, 12), sticky="ew")
-        detail_actions.grid_columnconfigure(0, weight=1)
-        detail_actions.grid_columnconfigure(1, weight=1)
-        detail_actions.grid_columnconfigure(2, weight=1)
-        detail_actions.grid_columnconfigure(3, weight=1)
-        self.detail_speak_btn = ttk.Button(detail_actions, text=self.tr("speak_word"), command=self.speak_selected)
-        self.detail_speak_btn.grid(row=0, column=0, padx=(0, 6), sticky="ew")
-        self.detail_sentence_btn = ttk.Button(
-            detail_actions,
-            text=self.tr("generate_sentence"),
-            command=self.make_sentence_for_selected_word,
-        )
-        self.detail_sentence_btn.grid(row=0, column=1, padx=3, sticky="ew")
-        self.detail_find_btn = ttk.Button(
-            detail_actions,
-            text=self.tr("find_in_corpus"),
-            command=self.search_selected_word_in_corpus,
-        )
-        self.detail_find_btn.grid(row=0, column=2, padx=3, sticky="ew")
-        self.detail_edit_btn = ttk.Button(
-            detail_actions,
-            text=self.tr("edit_pos_translation"),
-            command=self.edit_selected_word_meta,
-        )
-        self.detail_edit_btn.grid(row=0, column=3, padx=(6, 0), sticky="ew")
+        ).grid(row=4, column=0, padx=12, pady=(6, 12), sticky="w")
 
         self.right_notebook = ttk.Notebook(self.right)
         self.right_notebook.grid(row=1, column=0, padx=12, pady=(0, 12), sticky="nsew")
@@ -1027,6 +1090,7 @@ class MainView(ttk.Frame):
         self.history_list.bind("<Button-3>", self.on_history_right_click)
 
         self.history_context_menu = tk.Menu(self, tearoff=0)
+        self.history_context_menu.add_command(label=self.tr("rename_history_file"), command=self.rename_selected_history_item)
         self.history_context_menu.add_command(label=self.tr("delete_history"), command=self.delete_selected_history_item)
 
         self.history_empty = ttk.Label(
@@ -1431,6 +1495,8 @@ class MainView(ttk.Frame):
             self.show_info("no_words_to_save")
             return False
         current_source = self.store.get_current_source_path()
+        was_manual_session = not current_source
+        words_snapshot = [str(word) for word in self.store.words]
         initial_name = os.path.basename(current_source) if current_source else "word_list.csv"
         default_ext = ".csv"
         if str(initial_name).lower().endswith(".txt"):
@@ -1446,6 +1512,9 @@ class MainView(ttk.Frame):
         try:
             self.store.save_to_file(path)
             self.store.add_history(path)
+            if was_manual_session and words_snapshot:
+                tts_rebind_manual_session_cache_to_source(words_snapshot, path)
+            tts_set_preferred_pending_source(path)
             self.refresh_history()
             self.manual_source_dirty = False
             self.status_var.set(self.trf("ui_saved_word_list", name=os.path.basename(path)))
@@ -1458,6 +1527,7 @@ class MainView(ttk.Frame):
     def on_main_window_close(self):
         if not self._prompt_save_unsaved_manual_words():
             return
+        tts_set_preferred_pending_source(None)
         if not self.store.has_current_source_file():
             tts_cleanup_manual_session_cache()
         try:
@@ -1512,10 +1582,6 @@ class MainView(ttk.Frame):
         has_selection = selected_idx is not None and selected_idx < total_words
         selection_state = "normal" if has_selection else "disabled"
         for btn in (
-            self.detail_speak_btn,
-            self.detail_sentence_btn,
-            self.detail_find_btn,
-            self.detail_edit_btn,
             self.tools_sentence_btn,
             self.tools_find_btn,
         ):
@@ -1602,6 +1668,7 @@ class MainView(ttk.Frame):
         self.audio_precache_token += 1
         token = self.audio_precache_token
         source_path = self.store.get_current_source_path()
+        tts_set_preferred_pending_source(source_path)
         total_words = len({str(word or "").strip().casefold() for word in words if str(word or "").strip()})
         self.status_var.set(self.trf("ui_precache_start", count=total_words))
 
@@ -2150,6 +2217,10 @@ class MainView(ttk.Frame):
             self.dictation_correct_count += 1
             self._set_dictation_input_color("correct")
             self.dictation_status_var.set(self.tr("dictation_correct"))
+            if self.dictation_session_source_path == self._get_recent_wrong_cache_source_path():
+                self.store.clear_wrong_word(target)
+                tts_cleanup_word_audio_cache(target, source_path=self._get_recent_wrong_cache_source_path())
+                self.refresh_dictation_recent_list()
         else:
             self._set_dictation_input_color("wrong")
             self.dictation_status_var.set(self.trf("dictation_wrong_answer", word=target))
@@ -3154,6 +3225,61 @@ class MainView(ttk.Frame):
         self.refresh_history()
         self.show_info("history_deleted", name=name, count=removed_count)
 
+    def rename_selected_history_item(self):
+        sel = self.history_list.curselection()
+        if not sel:
+            return
+        history = self.store.load_history()
+        idx = sel[0]
+        if idx >= len(history):
+            return
+        item = history[idx]
+        old_path = os.path.abspath(str(item.get("path") or "").strip())
+        if not old_path or not os.path.exists(old_path):
+            self.show_info("rename_history_missing")
+            return
+        old_name = os.path.basename(old_path)
+        new_name = self._prompt_text_input(
+            self.tr("rename_history_file"),
+            self.tr("rename_history_prompt"),
+            initial_value=old_name,
+        )
+        if new_name is None:
+            return
+        new_name = str(new_name or "").strip()
+        if not new_name:
+            return
+        if os.path.basename(new_name) != new_name:
+            self.show_info("rename_history_invalid")
+            return
+        old_root, old_ext = os.path.splitext(old_name)
+        new_root, new_ext = os.path.splitext(new_name)
+        if not new_ext and old_ext:
+            new_name = f"{new_name}{old_ext}"
+        new_path = os.path.join(os.path.dirname(old_path), new_name)
+        if os.path.abspath(new_path) == old_path:
+            return
+        if os.path.exists(new_path):
+            self.show_info("rename_history_exists")
+            return
+        current_source = os.path.abspath(str(self.store.get_current_source_path() or "").strip()) if self.store.get_current_source_path() else ""
+        try:
+            os.rename(old_path, new_path)
+            migration = tts_rename_cache_source_path(old_path, new_path)
+            self.store.rename_history_path(old_path, new_path)
+            if current_source and current_source == old_path:
+                tts_set_preferred_pending_source(new_path)
+            self.refresh_history()
+            self._refresh_selection_details()
+            self.show_info(
+                "rename_history_done",
+                name=os.path.basename(new_path),
+                count=int((migration or {}).get("migrated", 0) or 0),
+                queued=int((migration or {}).get("queued", 0) or 0),
+            )
+        except Exception as e:
+            self.show_error("history", "rename_history_failed", error=e)
+
     def add_manual_wrong_word(self):
         word = self._prompt_text_input(self.tr("add_wrong_word"), self.tr("enter_wrong_word"))
         if word is None:
@@ -3172,7 +3298,7 @@ class MainView(ttk.Frame):
         self._refresh_selection_details()
         self.show_info("wrong_word_added", word=token)
 
-    def _prompt_text_input(self, title, prompt):
+    def _prompt_text_input(self, title, prompt, initial_value=""):
         win = tk.Toplevel(self)
         win.title(str(title or "Input"))
         win.configure(bg="#f6f7fb")
@@ -3182,7 +3308,7 @@ class MainView(ttk.Frame):
         wrap = ttk.Frame(win, style="Card.TFrame")
         wrap.pack(fill="both", expand=True, padx=10, pady=10)
         ttk.Label(wrap, text=str(prompt or ""), style="Card.TLabel", wraplength=360, justify="left").pack(anchor="w")
-        value_var = tk.StringVar()
+        value_var = tk.StringVar(value=str(initial_value or ""))
         entry = ttk.Entry(wrap, textvariable=value_var, width=36)
         entry.pack(fill="x", pady=(8, 10))
 
@@ -3925,8 +4051,12 @@ class MainView(ttk.Frame):
                     continue
                 if event_type == "success":
                     self._finish_gemini_validation_success(payload or {})
+                elif event_type == "success_tts":
+                    self._finish_tts_validation_success(payload or {})
                 elif event_type == "error":
                     self._finish_gemini_validation_error(str(payload or "Unknown error"))
+                elif event_type == "error_tts":
+                    self._finish_tts_validation_error(str(payload or "Unknown error"))
                 elif event_type == "done":
                     done = True
         except queue.Empty:
@@ -3941,11 +4071,12 @@ class MainView(ttk.Frame):
             self.gemini_key_window.focus_force()
             return
 
-        self.gemini_key_status_var.set("Paste your Gemini API key, then test it.")
-        self.gemini_key_var.set(get_gemini_api_key())
+        self.gemini_key_status_var.set("Paste your LLM API key, then test it.")
+        self.gemini_key_var.set(get_llm_api_key())
+        self.llm_api_provider_var.set(self.tr("provider_gemini"))
         win = tk.Toplevel(self)
         self.gemini_key_window = win
-        win.title("Gemini API Key")
+        win.title(self.tr("llm_api"))
         win.configure(bg="#f6f7fb")
         win.resizable(False, False)
         win.transient(self.winfo_toplevel())
@@ -3953,13 +4084,26 @@ class MainView(ttk.Frame):
         wrap = ttk.Frame(win, style="Card.TFrame")
         wrap.pack(fill="both", expand=True, padx=12, pady=12)
 
-        ttk.Label(wrap, text=self.tr("gemini_api_setup"), style="Card.TLabel").pack(anchor="w")
+        ttk.Label(wrap, text=self.tr("llm_api_setup"), style="Card.TLabel").pack(anchor="w")
         ttk.Label(
             wrap,
-            text=self.tr("gemini_key_desc"),
+            text=self.tr("llm_key_desc"),
             style="Card.TLabel",
             foreground="#666",
         ).pack(anchor="w", pady=(0, 8))
+
+        provider_row = ttk.Frame(wrap, style="Card.TFrame")
+        provider_row.pack(anchor="w", pady=(0, 8), fill="x")
+        ttk.Label(provider_row, text=f"{self.tr('api_provider')}:", style="Card.TLabel").pack(side=tk.LEFT)
+        provider_combo = ttk.Combobox(
+            provider_row,
+            textvariable=self.llm_api_provider_var,
+            values=[self.tr("provider_gemini")],
+            state="readonly",
+            width=18,
+        )
+        provider_combo.pack(side=tk.LEFT, padx=(6, 0))
+        provider_combo.bind("<<ComboboxSelected>>", lambda _e: set_llm_api_provider("gemini"))
 
         entry = ttk.Entry(wrap, textvariable=self.gemini_key_var, width=54, show="*")
         entry.pack(fill="x")
@@ -4012,10 +4156,10 @@ class MainView(ttk.Frame):
         api_key = str(self.gemini_key_var.get() or "").strip()
         model_name = self._get_selected_gemini_model()
         if not api_key:
-            messagebox.showinfo("Info", "Please paste a Gemini API key first.")
+            messagebox.showinfo(self.tr("info"), self.tr("paste_gemini_key_first"))
             return
 
-        self.gemini_key_status_var.set(f"Testing Gemini key with {model_name}...")
+        self.gemini_key_status_var.set(f"Testing LLM key with {model_name}...")
         if self.gemini_key_test_btn:
             self.gemini_key_test_btn.config(state="disabled")
 
@@ -4044,10 +4188,11 @@ class MainView(ttk.Frame):
     def _finish_gemini_validation_success(self, payload):
         api_key = str(payload.get("api_key") or "").strip()
         model_name = str(payload.get("model") or DEFAULT_GEMINI_MODEL).strip()
-        set_gemini_api_key(api_key)
+        set_llm_api_key(api_key)
+        set_llm_api_provider("gemini")
         set_generation_model(model_name)
         self.gemini_verified = True
-        self.gemini_key_status_var.set("Gemini key is valid.")
+        self.gemini_key_status_var.set("LLM API key is valid.")
         if self.gemini_key_test_btn:
             self.gemini_key_test_btn.config(state="normal")
         if self.gemini_key_window and self.gemini_key_window.winfo_exists():
@@ -4058,20 +4203,146 @@ class MainView(ttk.Frame):
             self.gemini_key_window.destroy()
         self.gemini_key_window = None
         self.gemini_key_test_btn = None
-        self.status_var.set("Gemini ready.")
+        self.status_var.set("LLM API ready.")
 
     def _finish_gemini_validation_error(self, message):
         self.gemini_verified = False
-        self.gemini_key_status_var.set("Gemini key test failed. Please paste another key.")
+        self.gemini_key_status_var.set("LLM API key test failed. Please paste another key.")
         if self.gemini_key_test_btn:
             self.gemini_key_test_btn.config(state="normal")
-        messagebox.showerror("Gemini API Key Error", str(message or "Unknown error"))
+        messagebox.showerror(self.tr("gemini_api_key_error"), str(message or "Unknown error"))
 
     def _require_gemini_ready(self):
-        if self.gemini_verified and get_gemini_api_key():
+        if self.gemini_verified and get_llm_api_key():
             return True
         self.open_gemini_key_window(force_verify=False)
         return False
+
+    def open_tts_key_window(self):
+        if self.tts_key_window and self.tts_key_window.winfo_exists():
+            self.tts_key_window.lift()
+            self.tts_key_window.focus_force()
+            return
+
+        self.tts_key_status_var.set("Paste your TTS API key, then test it.")
+        self.tts_key_var.set(get_tts_api_key())
+        self.tts_api_provider_var.set(self._tts_provider_label(get_tts_api_provider()))
+        win = tk.Toplevel(self)
+        self.tts_key_window = win
+        win.title(self.tr("tts_api"))
+        win.configure(bg="#f6f7fb")
+        win.resizable(False, False)
+        win.transient(self.winfo_toplevel())
+
+        wrap = ttk.Frame(win, style="Card.TFrame")
+        wrap.pack(fill="both", expand=True, padx=12, pady=12)
+
+        ttk.Label(wrap, text=self.tr("tts_api_setup"), style="Card.TLabel").pack(anchor="w")
+        ttk.Label(
+            wrap,
+            text=self.tr("tts_key_desc"),
+            style="Card.TLabel",
+            foreground="#666",
+        ).pack(anchor="w", pady=(0, 8))
+
+        provider_row = ttk.Frame(wrap, style="Card.TFrame")
+        provider_row.pack(anchor="w", pady=(0, 8), fill="x")
+        ttk.Label(provider_row, text=f"{self.tr('api_provider')}:", style="Card.TLabel").pack(side=tk.LEFT)
+        provider_combo = ttk.Combobox(
+            provider_row,
+            textvariable=self.tts_api_provider_var,
+            values=list(self._tts_provider_options().keys()),
+            state="readonly",
+            width=18,
+        )
+        provider_combo.pack(side=tk.LEFT, padx=(6, 0))
+        provider_combo.bind("<<ComboboxSelected>>", self._on_tts_provider_selected)
+
+        entry = ttk.Entry(wrap, textvariable=self.tts_key_var, width=54, show="*")
+        entry.pack(fill="x")
+        entry.focus_set()
+        entry.icursor(tk.END)
+        entry.bind("<Return>", lambda _event: self.test_and_save_tts_key())
+
+        ttk.Label(wrap, textvariable=self.tts_key_status_var, style="Card.TLabel", foreground="#444").pack(
+            anchor="w", pady=(10, 0)
+        )
+
+        btn_row = ttk.Frame(wrap, style="Card.TFrame")
+        btn_row.pack(fill="x", pady=(10, 0))
+        self.tts_key_test_btn = ttk.Button(btn_row, text=self.tr("test_and_save"), command=self.test_and_save_tts_key)
+        self.tts_key_test_btn.pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(btn_row, text=self.tr("close"), command=self._close_tts_key_window).pack(side=tk.LEFT)
+
+        win.grab_set()
+        win.protocol("WM_DELETE_WINDOW", self._close_tts_key_window)
+
+    def _close_tts_key_window(self):
+        if self.tts_key_window and self.tts_key_window.winfo_exists():
+            try:
+                self.tts_key_window.grab_release()
+            except Exception:
+                pass
+            self.tts_key_window.destroy()
+        self.tts_key_window = None
+        self.tts_key_test_btn = None
+
+    def _on_tts_provider_selected(self, _event=None):
+        provider = self._tts_provider_value()
+        set_tts_api_provider(provider)
+        self.tts_api_provider_var.set(self._tts_provider_label(provider))
+        self.refresh_voice_list()
+
+    def test_and_save_tts_key(self):
+        api_key = str(self.tts_key_var.get() or "").strip()
+        provider = self._tts_provider_value()
+        if not api_key:
+            messagebox.showinfo(self.tr("info"), self.tr("paste_tts_key_first"))
+            return
+        self.tts_key_status_var.set("Testing TTS API key...")
+        if self.tts_key_test_btn:
+            self.tts_key_test_btn.config(state="disabled")
+
+        self.gemini_validation_token += 1
+        token = self.gemini_validation_token
+        self.gemini_validation_active_token = token
+        self._clear_gemini_validation_queue()
+
+        import threading
+
+        def _run():
+            try:
+                validate_tts_api_key(api_key, provider, timeout=30)
+                self._emit_gemini_validation_event(
+                    "success_tts",
+                    token,
+                    {"api_key": api_key, "provider": provider},
+                )
+            except Exception as e:
+                self._emit_gemini_validation_event("error_tts", token, str(e))
+            self._emit_gemini_validation_event("done", token, None)
+
+        threading.Thread(target=_run, daemon=True).start()
+        self.after(80, lambda t=token: self._poll_gemini_validation_events(t))
+
+    def _finish_tts_validation_success(self, payload):
+        api_key = str(payload.get("api_key") or "").strip()
+        provider = str(payload.get("provider") or "gemini").strip().lower()
+        set_tts_api_key(api_key)
+        set_tts_api_provider(provider)
+        self.tts_key_status_var.set("TTS API key is valid.")
+        if self.tts_key_test_btn:
+            self.tts_key_test_btn.config(state="normal")
+        self._close_tts_key_window()
+        self.tts_api_provider_var.set(self._tts_provider_label(provider))
+        self.refresh_voice_list()
+        self.status_var.set("TTS API ready.")
+
+    def _finish_tts_validation_error(self, message):
+        self.tts_key_status_var.set("TTS API key test failed. Please paste another key.")
+        if self.tts_key_test_btn:
+            self.tts_key_test_btn.config(state="normal")
+        messagebox.showerror(self.tr("tts_api_key_error"), str(message or "Unknown error"))
 
     def generate_ielts_passage(self):
         if not self.store.words:
@@ -4159,7 +4430,7 @@ class MainView(ttk.Frame):
         try:
             result = generate_english_passage_with_gemini(
                 words,
-                api_key=get_gemini_api_key(),
+                api_key=get_llm_api_key(),
                 max_words=24,
                 timeout=90,
                 model=model_name,
@@ -4283,6 +4554,44 @@ class MainView(ttk.Frame):
             return
         self.open_settings_window()
 
+    def _close_settings_window(self):
+        if self.gemini_status_after:
+            try:
+                self.after_cancel(self.gemini_status_after)
+            except Exception:
+                pass
+        self.gemini_status_after = None
+        if self.settings_window and self.settings_window.winfo_exists():
+            self.settings_window.destroy()
+        self.settings_window = None
+
+    def _refresh_settings_gemini_status(self):
+        status = tts_get_gemini_queue_status()
+        provider_label = self._tts_provider_label(get_tts_api_provider())
+        state = str(status.get("state") or "idle").strip().lower()
+        if state == "rate_limited":
+            status_text = self.trf("tts_status_limited", provider=provider_label)
+        elif state == "ok":
+            status_text = self.trf("tts_status_normal", provider=provider_label)
+        elif state == "error":
+            status_text = self.trf("tts_status_error", provider=provider_label)
+        else:
+            status_text = self.trf("tts_status_idle", provider=provider_label)
+        queue_count = int(status.get("queue_count") or 0)
+        self.gemini_runtime_status_var.set(f"{status_text} | {self.trf('tts_status_queue', count=queue_count)}")
+
+        next_retry_at = float(status.get("next_retry_at") or 0.0)
+        if next_retry_at > 0:
+            retry_text = time.strftime("%H:%M:%S", time.localtime(next_retry_at))
+            self.gemini_retry_status_var.set(self.trf("tts_status_retry_at", time=retry_text))
+        else:
+            self.gemini_retry_status_var.set(self.tr("tts_status_retry_none"))
+
+        if self.settings_window and self.settings_window.winfo_exists():
+            self.gemini_status_after = self.after(1000, self._refresh_settings_gemini_status)
+        else:
+            self.gemini_status_after = None
+
     def toggle_history(self):
         self.history_visible = True
         self.check_visible = False
@@ -4376,10 +4685,12 @@ class MainView(ttk.Frame):
         self.rebuild_queue_on_mode_change()
 
     def open_settings_window(self):
+        self._sync_provider_vars()
         self.settings_window = tk.Toplevel(self)
         self.settings_window.title(self.tr("settings_title"))
         self.settings_window.configure(bg="#f6f7fb")
         self.settings_window.resizable(False, False)
+        self.settings_window.protocol("WM_DELETE_WINDOW", self._close_settings_window)
 
         container = ttk.Frame(self.settings_window, style="Card.TFrame")
         container.pack(padx=10, pady=10)
@@ -4452,9 +4763,43 @@ class MainView(ttk.Frame):
         )
         self.voice_combo.pack(anchor="w")
         self.voice_combo.bind("<<ComboboxSelected>>", self.on_voice_change)
-        ttk.Button(source_section, text=self.tr("gemini_api_key"), command=self.open_gemini_key_window).pack(
-            anchor="w", pady=(8, 0)
+        llm_row = ttk.Frame(source_section, style="Card.TFrame")
+        llm_row.pack(anchor="w", pady=(8, 0), fill="x")
+        ttk.Label(llm_row, text=f"{self.tr('llm_api')}:", style="Card.TLabel").pack(side=tk.LEFT)
+        ttk.Combobox(
+            llm_row,
+            textvariable=self.llm_api_provider_var,
+            values=[self.tr("provider_gemini")],
+            state="readonly",
+            width=12,
+        ).pack(side=tk.LEFT, padx=(6, 6))
+        ttk.Button(llm_row, text=self.tr("llm_api"), command=self.open_gemini_key_window).pack(side=tk.LEFT)
+
+        tts_row = ttk.Frame(source_section, style="Card.TFrame")
+        tts_row.pack(anchor="w", pady=(8, 0), fill="x")
+        ttk.Label(tts_row, text=f"{self.tr('tts_api')}:", style="Card.TLabel").pack(side=tk.LEFT)
+        tts_provider_combo = ttk.Combobox(
+            tts_row,
+            textvariable=self.tts_api_provider_var,
+            values=list(self._tts_provider_options().keys()),
+            state="readonly",
+            width=12,
         )
+        tts_provider_combo.pack(side=tk.LEFT, padx=(6, 6))
+        tts_provider_combo.bind("<<ComboboxSelected>>", self._on_tts_provider_selected)
+        ttk.Button(tts_row, text=self.tr("tts_api"), command=self.open_tts_key_window).pack(side=tk.LEFT)
+        ttk.Label(
+            source_section,
+            textvariable=self.gemini_runtime_status_var,
+            style="Card.TLabel",
+            foreground="#4b5563",
+        ).pack(anchor="w", pady=(8, 0))
+        ttk.Label(
+            source_section,
+            textvariable=self.gemini_retry_status_var,
+            style="Card.TLabel",
+            foreground="#667085",
+        ).pack(anchor="w", pady=(2, 0))
 
         source_sep = ttk.Separator(right_panel, orient="horizontal")
         sections.append({"key": "source", "frame": source_section, "sep": source_sep})
@@ -4586,6 +4931,7 @@ class MainView(ttk.Frame):
         self.update_speech_rate_buttons()
         self.on_volume_change()
         self.refresh_voice_list()
+        self._refresh_settings_gemini_status()
 
     def apply_custom_interval(self):
         try:
@@ -5001,7 +5347,7 @@ class MainView(ttk.Frame):
             try:
                 sentence = generate_example_sentence_with_gemini(
                     word=word,
-                    api_key=get_gemini_api_key(),
+                    api_key=get_llm_api_key(),
                     model=model_name,
                     timeout=45,
                 )
@@ -5230,7 +5576,7 @@ class MainView(ttk.Frame):
         label = self.voice_var.get()
         data = self.voice_map.get(label)
         if not data:
-            set_voice_source(SOURCE_GEMINI, "gemini-kore", "Gemini TTS (UK)")
+            set_voice_source(SOURCE_GEMINI, "gemini-kore", None)
             return
         source, voice_id, voice_label = data
         if source == "piper" and not piper_ready():
@@ -5245,14 +5591,14 @@ class MainView(ttk.Frame):
                     "The source has been switched to Kokoro for now.",
                 )
             else:
-                set_voice_source(SOURCE_GEMINI, "gemini-kore", "Gemini TTS (UK)")
+                set_voice_source(SOURCE_GEMINI, "gemini-kore", None)
                 self.refresh_voice_list()
                 messagebox.showinfo(
                     "Piper Not Ready",
                     "Piper is listed for convenience, but it is not configured yet.\n\n"
                     "To enable it, add at least one Piper .onnx model and matching .onnx.json config under:\n"
                     "data/models/piper/\n\n"
-                    "The source has been switched back to Gemini for now.",
+                    "The source has been switched back to the online TTS provider for now.",
                 )
             return
         set_voice_source(source, voice_id, voice_label)

@@ -1,11 +1,22 @@
 # -*- coding: utf-8 -*-
+from services.app_config import get_tts_api_provider
+
+
 SOURCE_GEMINI = "gemini"
 SOURCE_KOKORO = "kokoro"
 SOURCE_PIPER = "piper"
 
 _voice_source = SOURCE_GEMINI
 _voice_id = "gemini-kore"
-_voice_label = "Gemini TTS (UK)"
+
+
+def _online_voice_label():
+    if get_tts_api_provider() == "elevenlabs":
+        return "ElevenLabs TTS"
+    return "Gemini TTS (UK)"
+
+
+_voice_label = _online_voice_label()
 
 
 def get_voice_source():
@@ -33,5 +44,5 @@ def set_voice_source(source, voice_id=None, voice_label=None):
         _voice_label = voice_label if voice_label else "Piper English"
     else:
         _voice_id = voice_id if voice_id else "gemini-kore"
-        _voice_label = voice_label if voice_label else "Gemini TTS (UK)"
+        _voice_label = voice_label if voice_label else _online_voice_label()
     return True

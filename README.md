@@ -22,7 +22,9 @@ A Windows desktop app for vocabulary study, pronunciation practice, dictation, I
 - Wrong answers are stored locally, sorted by mistake count, and shown in the recent wrong-word list with error causes
 - History items can be removed inside the app, and matching audio cache entries are cleaned up at the same time
 - Indexed corpus documents can be removed from the app without deleting the original files on disk
-- User-selectable TTS source: Gemini TTS, local Kokoro, or local Piper
+- Separate `LLM API` and `TTS API` settings
+- User-selectable online TTS provider: ElevenLabs or Gemini
+- User-selectable playback source: online TTS, local Kokoro, or local Piper
 - Built-in English -> Chinese translation with Argos Translate
 - Built-in part-of-speech tagging with spaCy, cached locally for repeated words
 - Part of speech and Chinese translation can be edited by the user and stored locally
@@ -52,7 +54,12 @@ py -3 -m spacy download en_core_web_sm
 py -3 app.py
 ```
 
-When the app opens, paste your Gemini API key into the popup window and click `Test and Save`.
+When the app opens:
+
+- configure `LLM API` if you want passage generation and example-sentence generation
+- configure `TTS API` if you want online word audio generation
+
+`LLM API` currently supports Gemini. `TTS API` currently supports Gemini and ElevenLabs.
 
 ## Dependencies
 
@@ -60,22 +67,32 @@ When the app opens, paste your Gemini API key into the popup window and click `T
 - `en_core_web_sm` is the expected spaCy model for the current workflow
 - `spacy-wordnet` and local WordNet data are used for synonym lookup
 - `Argos Translate` is used for local English -> Chinese translation
-- `Gemini API` is used for passage generation, example sentence generation, and Gemini TTS
+- `Gemini API` is used for LLM features such as passage generation and example sentence generation
+- `Gemini TTS` is supported as an online TTS provider
+- `ElevenLabs` is supported as an online TTS provider
 - `Kokoro` and `Piper` are optional local TTS backends
 
 ## TTS Behavior
 
-- Pick the active source in `Settings > Source`
-- `Gemini TTS` is the default online source and requires a valid Gemini API key plus network access
+- Configure providers in `Settings > LLM API` and `Settings > TTS API`
+- Pick the active playback source in `Settings > Source`
+- `LLM API` is currently Gemini-only
+- `TTS API` currently supports `ElevenLabs` and `Gemini`
+- If `TTS API` is set to `ElevenLabs`, online word-audio generation prefers `ElevenLabs`, then `Gemini`, then local fallback
+- If `TTS API` is set to `Gemini`, online word-audio generation prefers `Gemini`, then local fallback
+- ElevenLabs uses a default British-style voice for IELTS-style playback
 - `Kokoro` is an optional offline source and only appears when local model files exist in `data/models/kokoro/`
 - `Piper` is a project-local local source using models under `data/models/piper/`
-- If the selected source is Gemini and Gemini playback fails, the app automatically falls back to Kokoro when Kokoro is available
+- If the selected online source fails at playback time, the app automatically falls back to a local backend when available
 - Single-word audio is cached under `data/audio_cache/sources/`
 - Source-specific caches are grouped by source file and then by `a-z` or `other`
-- Regular list entries prefer lightweight metadata links instead of duplicating the same Gemini `wav`
+- Regular list entries prefer lightweight metadata links instead of duplicating the same online `wav`
 - Recent wrong words keep dedicated cache entries so dictation review can reuse stable local audio
 - Each cached word can carry metadata that marks its real backend source and the desired backend target
-- Pending Gemini replacements are persisted in a queue, so local fallback audio can still be replaced after restarting the app
+- The online replacement queue is persisted, so local fallback audio can still be replaced after restarting the app
+- Queue throttling is conservative by provider:
+  - ElevenLabs: about `1.5s` per request, `45s` cooldown after rate-limit errors
+  - Gemini TTS: slower paced requests and longer cooldowns because the free-tier limit is stricter
 - Passage playback keeps one source for the whole article and does not mix backends inside the same generated passage
 
 ## Local Runtime Files
@@ -84,8 +101,8 @@ When the app opens, paste your Gemini API key into the popup window and click `T
 - `data/models/piper/`: Piper `*.onnx` voice models and matching `*.onnx.json` config files
 - `data/audio_cache/`: generated local audio cache
 - `data/audio_cache/sources/`: source-specific word caches grouped by file and first letter
-- `data/audio_cache/global/`: shared Gemini cache reused across files when available
-- `data/audio_cache/pending_gemini_replacements.json`: persisted queue of local cache files waiting to be replaced by Gemini
+- `data/audio_cache/global/`: shared online-TTS cache reused across files when available
+- `data/audio_cache/pending_gemini_replacements.json`: persisted online replacement queue
 - `data/pos_cache.json`: cached part-of-speech labels
 - `data/translation_cache.json`: cached translations
 - `data/synonyms_cache.json`: cached synonym results
@@ -106,7 +123,7 @@ When the app opens, paste your Gemini API key into the popup window and click `T
 
 - Left side: import, manual paste/type, save-as, new list, playback, settings, and dictation entry
 - Right side: current word details plus tabs for `Review / History / Tools`
-- Current word details show the selected word, part of speech, translation, notes, and quick actions
+- Current word details show the selected word, part of speech, translation, and notes
 - The word list is displayed in a book-style layout with numbering, the English word on the first line, and `part of speech + Chinese translation` on the second line
 
 ## Dictation
@@ -136,7 +153,7 @@ When the app opens, paste your Gemini API key into the popup window and click `T
 
 ## Credits
 
-- Speech synthesis is powered by Gemini TTS and optional local Kokoro / Piper playback
+- Speech synthesis is powered by ElevenLabs, Gemini TTS, and optional local Kokoro / Piper playback
 - Part-of-speech tagging is powered by [spaCy](https://spacy.io/)
 - Synonym lookup is powered by [spaCy WordNet](https://github.com/argilla-io/spacy-wordnet) and WordNet data
 - English -> Chinese translation is powered by [argosopentech/argos-translate](https://github.com/argosopentech/argos-translate)

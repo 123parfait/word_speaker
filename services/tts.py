@@ -16,7 +16,7 @@ import winsound
 import numpy as np
 from tkinter import messagebox
 
-from services.app_config import get_gemini_api_key
+from services.app_config import get_llm_api_key, get_tts_api_key, get_tts_api_provider
 from services.voice_catalog import (
     get_kokoro_paths,
     get_piper_voice_profile,
@@ -51,10 +51,22 @@ _backend_status = {}
 _pending_gemini_replacements = {}
 _pending_gemini_lock = threading.Lock()
 _pending_gemini_worker_running = False
+_preferred_pending_source = None
 _manual_session_cache_paths = set()
 _manual_session_cache_lock = threading.Lock()
 _cache_metadata_memory = {}
 _cache_metadata_lock = threading.Lock()
+_gemini_queue_status_lock = threading.Lock()
+_gemini_queue_status = {
+    "state": "idle",
+    "next_retry_at": 0.0,
+    "last_success_at": 0.0,
+    "last_error": "",
+    "worker_running": False,
+    "queue_count": 0,
+}
+_gemini_queue_attempt_lock = threading.Lock()
+_gemini_queue_last_attempt_at = 0.0
 
 TTS_MODEL = "gemini-2.5-flash-preview-tts"
 TTS_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{TTS_MODEL}:generateContent"
@@ -64,11 +76,87 @@ TTS_SAMPLE_WIDTH = 2
 TTS_VOICE_NAME = "Kore"
 TTS_STYLE_SHORT = "Read the word clearly in a neutral British English accent for IELTS vocabulary practice."
 TTS_STYLE_LONG = "Read this passage clearly in a natural British English accent for IELTS listening practice."
-GEMINI_RATE_LIMIT_COOLDOWN_SECONDS = 25
+ELEVENLABS_VOICE_ID = "JBFqnCBsd6RMkjVDRZzb"
+ELEVENLABS_MODEL_ID = "eleven_multilingual_v2"
+ELEVENLABS_URL = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}?output_format=pcm_24000"
+GEMINI_QUEUE_REQUEST_INTERVAL_SECONDS = 40
+GEMINI_RATE_LIMIT_COOLDOWN_SECONDS = 120
+GEMINI_MANUAL_REQUEST_COOLDOWN_SECONDS = 60
+ELEVENLABS_QUEUE_REQUEST_INTERVAL_SECONDS = 1.5
+ELEVENLABS_RATE_LIMIT_COOLDOWN_SECONDS = 45
+ELEVENLABS_MANUAL_REQUEST_COOLDOWN_SECONDS = 20
 
 
 def _clamp(value, low, high):
     return max(low, min(high, float(value)))
+
+
+def _set_gemini_queue_status(**updates):
+    with _gemini_queue_status_lock:
+        _gemini_queue_status.update(updates)
+
+
+def _refresh_gemini_queue_status_counts():
+    with _pending_gemini_lock:
+        queue_count = len(_pending_gemini_replacements)
+        worker_running = bool(_pending_gemini_worker_running)
+    try:
+        disk_payload = _load_json_file(PENDING_GEMINI_QUEUE_PATH, [])
+        if isinstance(disk_payload, list):
+            queue_count = len(disk_payload)
+    except Exception:
+        pass
+    _set_gemini_queue_status(queue_count=queue_count, worker_running=worker_running)
+
+
+def get_gemini_queue_status():
+    _refresh_gemini_queue_status_counts()
+    with _gemini_queue_status_lock:
+        return dict(_gemini_queue_status)
+
+
+def _defer_gemini_queue(wait_seconds, *, state=None):
+    global _gemini_queue_last_attempt_at
+    wait_seconds = max(0.0, float(wait_seconds or 0.0))
+    with _gemini_queue_attempt_lock:
+        now = time.time()
+        current_next = _gemini_queue_last_attempt_at + GEMINI_QUEUE_REQUEST_INTERVAL_SECONDS
+        target_next = max(current_next, now + wait_seconds)
+        _gemini_queue_last_attempt_at = target_next - GEMINI_QUEUE_REQUEST_INTERVAL_SECONDS
+    updates = {"next_retry_at": target_next}
+    if state:
+        updates["state"] = state
+    _set_gemini_queue_status(**updates)
+
+
+def _wait_for_gemini_queue_slot(provider=None):
+    global _gemini_queue_last_attempt_at
+    interval_seconds = _queue_interval_for_provider(provider)
+    while True:
+        with _gemini_queue_attempt_lock:
+            now = time.time()
+            wait_seconds = interval_seconds - (now - _gemini_queue_last_attempt_at)
+            if wait_seconds <= 0:
+                _gemini_queue_last_attempt_at = now
+                return
+            next_retry_at = now + wait_seconds
+        _set_gemini_queue_status(state="ok", next_retry_at=next_retry_at)
+        threading.Event().wait(wait_seconds)
+
+
+def _synthesize_with_user_online(text, volume, *, short_text):
+    provider = _primary_online_provider()
+    _defer_gemini_queue(_manual_request_cooldown_for_provider(provider), state="ok")
+    try:
+        return _synthesize_with_online(text, volume=volume, short_text=short_text)
+    except Exception as exc:
+        if _is_gemini_rate_limited_error(exc):
+            _set_gemini_queue_status(
+                state="rate_limited",
+                next_retry_at=time.time() + _rate_limit_cooldown_for_provider(provider),
+                last_error=str(exc),
+            )
+        raise
 
 
 def _normalize_text(text, ensure_sentence_end=False):
@@ -76,6 +164,46 @@ def _normalize_text(text, ensure_sentence_end=False):
     if ensure_sentence_end and raw and raw[-1] not in ".!?;:":
         raw = f"{raw}."
     return raw
+
+
+def _normalize_cache_key_text(text):
+    return _normalize_text(text, ensure_sentence_end=False).rstrip(".!?;:").casefold()
+
+
+def _current_online_provider():
+    value = str(get_tts_api_provider() or "gemini").strip().lower()
+    return "elevenlabs" if value == "elevenlabs" else "gemini"
+
+
+def _is_online_backend(backend_key):
+    return str(backend_key or "").strip().lower() in {"gemini", "elevenlabs"}
+
+
+def _online_provider_label(provider=None):
+    return "ElevenLabs TTS" if str(provider or _current_online_provider()).strip().lower() == "elevenlabs" else "Gemini TTS"
+
+
+def _primary_online_provider():
+    return _current_online_provider()
+
+
+def _secondary_online_provider(primary=None):
+    first = str(primary or _primary_online_provider()).strip().lower()
+    if first == "elevenlabs" and get_llm_api_key():
+        return "gemini"
+    return None
+
+
+def _queue_interval_for_provider(provider):
+    return ELEVENLABS_QUEUE_REQUEST_INTERVAL_SECONDS if str(provider or "").strip().lower() == "elevenlabs" else GEMINI_QUEUE_REQUEST_INTERVAL_SECONDS
+
+
+def _rate_limit_cooldown_for_provider(provider):
+    return ELEVENLABS_RATE_LIMIT_COOLDOWN_SECONDS if str(provider or "").strip().lower() == "elevenlabs" else GEMINI_RATE_LIMIT_COOLDOWN_SECONDS
+
+
+def _manual_request_cooldown_for_provider(provider):
+    return ELEVENLABS_MANUAL_REQUEST_COOLDOWN_SECONDS if str(provider or "").strip().lower() == "elevenlabs" else GEMINI_MANUAL_REQUEST_COOLDOWN_SECONDS
 
 
 def _safe_name(text, limit=40):
@@ -114,7 +242,7 @@ def _source_word_cache_dir(text=None, source_path=None):
 
 
 def _shared_letter_bucket(text):
-    normalized = _normalize_text(text, ensure_sentence_end=False).casefold()
+    normalized = _normalize_cache_key_text(text)
     for ch in normalized:
         if "a" <= ch <= "z":
             return ch
@@ -135,9 +263,10 @@ def _filename_letter_bucket(name):
 
 def _flat_compat_word_cache_path(text, source_path=None):
     source_key = str(_normalize_source_path(source_path) or "").casefold()
-    normalized = _normalize_text(text, ensure_sentence_end=False).casefold()
+    normalized = _normalize_cache_key_text(text)
+    provider = _current_online_provider()
     key = hashlib.sha1(
-        f"gemini|{source_key}|{TTS_MODEL}|{TTS_VOICE_NAME}|{normalized}".encode("utf-8")
+        f"{provider}|{source_key}|{TTS_MODEL}|{TTS_VOICE_NAME}|{normalized}".encode("utf-8")
     ).hexdigest()[:16]
     name = _safe_name(normalized)
     return os.path.join(GLOBAL_WORD_CACHE_DIR, f"{name}_{key}.wav")
@@ -145,9 +274,10 @@ def _flat_compat_word_cache_path(text, source_path=None):
 
 def _source_flat_compat_word_cache_path(text, source_path=None):
     source_key = str(_normalize_source_path(source_path) or "").casefold()
-    normalized = _normalize_text(text, ensure_sentence_end=False).casefold()
+    normalized = _normalize_cache_key_text(text)
+    provider = _current_online_provider()
     key = hashlib.sha1(
-        f"gemini|{source_key}|{TTS_MODEL}|{TTS_VOICE_NAME}|{normalized}".encode("utf-8")
+        f"{provider}|{source_key}|{TTS_MODEL}|{TTS_VOICE_NAME}|{normalized}".encode("utf-8")
     ).hexdigest()[:16]
     name = _safe_name(normalized)
     return os.path.join(os.path.join(SOURCE_WORD_CACHE_ROOT_DIR, _source_bucket_name(source_path)), f"{name}_{key}.wav")
@@ -161,7 +291,7 @@ def _legacy_word_cache_path(text, source_path=None):
     legacy_dir = os.path.join(os.path.dirname(source), f".{source_name}.wordspeaker_audio")
     source_key = get_voice_source()
     voice_id = get_voice_id()
-    normalized = _normalize_text(text, ensure_sentence_end=False).casefold()
+    normalized = _normalize_cache_key_text(text)
     key = hashlib.sha1(
         f"{source_key}|{voice_id}|{TTS_MODEL}|{TTS_VOICE_NAME}|{normalized}".encode("utf-8")
     ).hexdigest()[:16]
@@ -171,21 +301,41 @@ def _legacy_word_cache_path(text, source_path=None):
 
 def _word_cache_path(text, source_path=None):
     source_key = str(_normalize_source_path(source_path) or "").casefold()
-    normalized = _normalize_text(text, ensure_sentence_end=False).casefold()
+    normalized = _normalize_cache_key_text(text)
+    provider = _current_online_provider()
     key = hashlib.sha1(
-        f"gemini|{source_key}|{TTS_MODEL}|{TTS_VOICE_NAME}|{normalized}".encode("utf-8")
+        f"{provider}|{source_key}|{TTS_MODEL}|{TTS_VOICE_NAME}|{normalized}".encode("utf-8")
     ).hexdigest()[:16]
     name = _safe_name(normalized)
     return os.path.join(_source_word_cache_dir(normalized, source_path=source_path), f"{name}_{key}.wav")
 
 
 def _shared_word_cache_path(text):
-    normalized = _normalize_text(text, ensure_sentence_end=False).casefold()
+    normalized = _normalize_cache_key_text(text)
+    provider = _current_online_provider()
     key = hashlib.sha1(
-        f"gemini|shared|{TTS_MODEL}|{TTS_VOICE_NAME}|{normalized}".encode("utf-8")
+        f"{provider}|shared|{TTS_MODEL}|{TTS_VOICE_NAME}|{normalized}".encode("utf-8")
     ).hexdigest()[:16]
     name = _safe_name(normalized)
     return os.path.join(_shared_word_cache_dir(normalized), f"{name}_{key}.wav")
+
+
+def _provider_source_word_cache_path(text, source_path=None, provider=None):
+    normalized = _normalize_cache_key_text(text)
+    backend = str(provider or _current_online_provider()).strip().lower()
+    key = hashlib.sha1(
+        f"{backend}|{str(_normalize_source_path(source_path) or '').casefold()}|{TTS_MODEL}|{TTS_VOICE_NAME}|{normalized}".encode("utf-8")
+    ).hexdigest()[:16]
+    return os.path.join(_source_word_cache_dir(normalized, source_path=source_path), f"{_safe_name(normalized)}_{key}.wav")
+
+
+def _provider_shared_word_cache_path(text, provider=None):
+    normalized = _normalize_cache_key_text(text)
+    backend = str(provider or _current_online_provider()).strip().lower()
+    key = hashlib.sha1(
+        f"{backend}|shared|{TTS_MODEL}|{TTS_VOICE_NAME}|{normalized}".encode("utf-8")
+    ).hexdigest()[:16]
+    return os.path.join(_shared_word_cache_dir(normalized), f"{_safe_name(normalized)}_{key}.wav")
 
 
 def _is_recent_wrong_source(source_path=None):
@@ -216,23 +366,30 @@ def _canonicalize_cache_path(cache_path, *, text=None, source_path=None, metadat
             return os.path.join(SHARED_WORD_CACHE_DIR, *parts[1:])
         text_value = _normalize_text(text or (metadata or {}).get("text"), ensure_sentence_end=False)
         source_value = _normalize_source_path(source_path or (metadata or {}).get("source_path"))
+        provider_value = str(
+            (metadata or {}).get("desired_backend")
+            or (metadata or {}).get("backend")
+            or _current_online_provider()
+        ).strip().lower()
+        if not _is_online_backend(provider_value):
+            provider_value = _current_online_provider()
         if text_value:
             if source_value == "shared":
-                return _shared_word_cache_path(text_value)
-            return _word_cache_path(text_value, source_path=source_value)
+                return _provider_shared_word_cache_path(text_value, provider=provider_value)
+            return _provider_source_word_cache_path(text_value, source_path=source_value, provider=provider_value)
     return normalized
 
 
 def _backend_key(source=None, fallback_backend=None):
     source_name = str(source or "").strip().lower()
     fallback_name = str(fallback_backend or "").strip().lower()
-    if fallback_name in {"gemini", "kokoro", "piper"}:
+    if fallback_name in {"gemini", "elevenlabs", "kokoro", "piper"}:
         return fallback_name
     if source_name == SOURCE_KOKORO:
         return "kokoro"
     if source_name == SOURCE_PIPER:
         return "piper"
-    return "gemini"
+    return _current_online_provider()
 
 
 def _backend_label_from_key(backend_key):
@@ -241,7 +398,20 @@ def _backend_label_from_key(backend_key):
         return "Kokoro (Offline)"
     if backend == "piper":
         return "Piper (Local)"
+    if backend == "elevenlabs":
+        return "ElevenLabs TTS"
     return "Gemini TTS"
+
+
+def _backend_key_from_label(label):
+    value = str(label or "").strip().lower()
+    if "elevenlabs" in value:
+        return "elevenlabs"
+    if "kokoro" in value:
+        return "kokoro"
+    if "piper" in value:
+        return "piper"
+    return "gemini"
 
 
 def _selected_source_backend_key():
@@ -250,7 +420,7 @@ def _selected_source_backend_key():
 
 def _actual_backend_key_for_result(*, fallback=False):
     selected = _selected_source_backend_key()
-    if selected == "gemini" and fallback:
+    if _is_online_backend(selected) and fallback:
         return "kokoro"
     return selected
 
@@ -426,7 +596,7 @@ def _collapse_existing_lightweight_source_caches():
                 continue
             backend = str(metadata.get("backend") or "").strip().lower()
             desired_backend = str(metadata.get("desired_backend") or "").strip().lower()
-            if backend != "gemini" or desired_backend != "gemini":
+            if not _is_online_backend(backend) or desired_backend != backend:
                 continue
             if not os.path.exists(cache_path):
                 continue
@@ -439,10 +609,10 @@ def _collapse_existing_lightweight_source_caches():
 def _cache_group_key(cache_path, metadata):
     text_value = _normalize_text((metadata or {}).get("text"), ensure_sentence_end=False)
     if text_value:
-        return text_value.casefold()
+        return text_value.rstrip(".!?;:").casefold()
     stem = os.path.splitext(os.path.basename(str(cache_path or "").strip()))[0]
     base = stem.rsplit("_", 1)[0] if "_" in stem else stem
-    return str(base or "").casefold()
+    return str(base or "").rstrip(".!?;:").casefold()
 
 
 def _cache_group_source_bucket(cache_path):
@@ -471,8 +641,8 @@ def _cache_sort_key(cache_path, metadata):
     except Exception:
         latest_mtime = 0
     return (
-        1 if desired_backend == "gemini" else 0,
-        1 if backend == "gemini" else 0,
+        1 if _is_online_backend(desired_backend) else 0,
+        1 if backend == desired_backend and _is_online_backend(backend) else 0,
         pending,
         playable,
         actual_wav,
@@ -482,28 +652,37 @@ def _cache_sort_key(cache_path, metadata):
 
 
 def _cleanup_duplicate_source_cache_entries():
-    if not os.path.isdir(SOURCE_WORD_CACHE_ROOT_DIR):
+    roots = []
+    if os.path.isdir(SOURCE_WORD_CACHE_ROOT_DIR):
+        roots.append((SOURCE_WORD_CACHE_ROOT_DIR, "source"))
+    if os.path.isdir(SHARED_WORD_CACHE_DIR):
+        roots.append((SHARED_WORD_CACHE_DIR, "shared"))
+    if not roots:
         return 0
 
     grouped = {}
-    for root, _, names in os.walk(SOURCE_WORD_CACHE_ROOT_DIR):
-        for name in names:
-            lower_name = name.lower()
-            if lower_name.endswith(".wav"):
-                cache_path = os.path.join(root, name)
-            elif lower_name.endswith(".wav.json"):
-                cache_path = os.path.join(root, name[:-5])
-            else:
-                continue
-            metadata = _load_cache_metadata(cache_path)
-            bucket = _cache_group_source_bucket(cache_path)
-            key = _cache_group_key(cache_path, metadata)
-            if not (bucket and key):
-                continue
-            grouped.setdefault((bucket, key), {})[cache_path] = metadata
+    for root_dir, root_kind in roots:
+        for root, _, names in os.walk(root_dir):
+            for name in names:
+                lower_name = name.lower()
+                if lower_name.endswith(".wav"):
+                    cache_path = os.path.join(root, name)
+                elif lower_name.endswith(".wav.json"):
+                    cache_path = os.path.join(root, name[:-5])
+                else:
+                    continue
+                metadata = _load_cache_metadata(cache_path)
+                if root_kind == "source":
+                    bucket = _cache_group_source_bucket(cache_path)
+                else:
+                    bucket = "shared"
+                key = _cache_group_key(cache_path, metadata)
+                if not (bucket and key):
+                    continue
+                grouped.setdefault((bucket, key), {})[cache_path] = metadata
 
     removed = 0
-    for (_bucket, _key), item_map in grouped.items():
+    for (bucket, _key), item_map in grouped.items():
         cache_paths = list(item_map.keys())
         if len(cache_paths) <= 1:
             continue
@@ -524,10 +703,12 @@ def _cleanup_duplicate_source_cache_entries():
                 pass
             _remove_cache_metadata(cache_path)
             _remove_pending_gemini(cache_path)
+        if bucket == "shared":
+            continue
         if pending_seen and keep_text and keep_source and not _is_pending_gemini(keep_path):
             keep_backend = str(keep_metadata.get("backend") or "").strip().lower()
             keep_desired = str(keep_metadata.get("desired_backend") or "").strip().lower()
-            if keep_backend != "gemini" and keep_desired == "gemini":
+            if keep_backend != keep_desired and _is_online_backend(keep_desired):
                 _enqueue_existing_cache_for_gemini_replacement(keep_text, keep_path, source_path=keep_source)
     return removed
 
@@ -550,12 +731,19 @@ def _load_cache_metadata(cache_path):
     data = _load_json_file(_cache_meta_path(canonical_path), {})
     payload = data if isinstance(data, dict) else {}
     if payload:
-        payload["cache_path"] = canonical_path
+        original_cache_path = str(payload.get("cache_path") or "").strip()
         source_value = _normalize_source_path(payload.get("source_path"))
+        if source_value != payload.get("source_path"):
+            payload["source_path"] = source_value
         linked_shared = str(payload.get("linked_shared_path") or "").strip()
         if linked_shared:
             payload["linked_shared_path"] = _canonicalize_cache_path(linked_shared, metadata=payload)
-        if payload.get("cache_path") != str(cache_path or "").strip():
+        payload["cache_path"] = canonical_path
+        if (
+            original_cache_path != canonical_path
+            or payload.get("source_path") != data.get("source_path")
+            or payload.get("linked_shared_path") != data.get("linked_shared_path")
+        ):
             _write_json_file(_cache_meta_path(canonical_path), payload)
     with _cache_metadata_lock:
         _cache_metadata_memory[key] = dict(payload)
@@ -563,7 +751,7 @@ def _load_cache_metadata(cache_path):
 
 
 def _save_cache_metadata(cache_path, metadata):
-    cache_path = _canonicalize_cache_path(cache_path, metadata=metadata)
+    cache_path = _canonicalize_cache_path(cache_path)
     payload = dict(metadata or {})
     payload["cache_path"] = cache_path
     _write_json_file(_cache_meta_path(cache_path), payload)
@@ -606,12 +794,14 @@ def _resolve_cache_audio_path(cache_path):
     return ""
 
 
-def _write_source_alias_metadata(text, source_path, shared_path, *, backend="gemini", desired_backend="gemini"):
+def _write_source_alias_metadata(text, source_path, shared_path, *, backend=None, desired_backend=None):
     source_cache_path = _word_cache_path(text, source_path=source_path)
+    actual_backend = _backend_key(fallback_backend=backend or _current_online_provider())
+    wanted_backend = _backend_key(fallback_backend=desired_backend or actual_backend)
     metadata = {
         "text": _normalize_text(text, ensure_sentence_end=False),
-        "backend": backend,
-        "desired_backend": desired_backend,
+        "backend": actual_backend,
+        "desired_backend": wanted_backend,
         "source_path": str(_normalize_source_path(source_path) or "").strip() or None,
         "linked_shared_path": shared_path,
         "updated_at": int(os.path.getmtime(shared_path)) if shared_path and os.path.exists(shared_path) else None,
@@ -637,8 +827,8 @@ def _collapse_source_cache_to_alias(text, source_path=None):
             text,
             source_path,
             shared_cache_path,
-            backend="gemini",
-            desired_backend="gemini",
+            backend=_current_online_provider(),
+            desired_backend=_current_online_provider(),
         )
         return True
     except Exception:
@@ -683,13 +873,13 @@ def _hydrate_source_cache_from_shared(text, source_path=None):
     try:
         metadata = _load_cache_metadata(shared_cache_path)
         if _is_lightweight_file_source(source_path):
-            _write_source_alias_metadata(
-                text,
-                source_path,
-                shared_cache_path,
-                backend=str(metadata.get("backend") or "gemini"),
-                desired_backend=str(metadata.get("desired_backend") or "gemini"),
-            )
+                _write_source_alias_metadata(
+                    text,
+                    source_path,
+                    shared_cache_path,
+                    backend=str(metadata.get("backend") or _current_online_provider()),
+                    desired_backend=str(metadata.get("desired_backend") or _current_online_provider()),
+                )
         else:
             metadata["source_path"] = str(_normalize_source_path(source_path) or "").strip() or None
             _copy_cache_file(shared_cache_path, source_cache_path, metadata=metadata)
@@ -715,7 +905,7 @@ def _save_pending_gemini_queue_locked():
                 "text": text,
                 "source_path": str(item.get("source_path") or "").strip() or None,
                 "created_at": item.get("created_at"),
-                "desired_backend": "gemini",
+                "desired_backend": str(item.get("desired_backend") or _current_online_provider()).strip().lower(),
             }
         )
     _write_json_file(PENDING_GEMINI_QUEUE_PATH, payload)
@@ -747,9 +937,11 @@ def _load_pending_gemini_queue():
                 "text": text,
                 "source_path": str(item.get("source_path") or "").strip() or None,
                 "created_at": item.get("created_at"),
+                "desired_backend": str(item.get("desired_backend") or _current_online_provider()).strip().lower(),
             }
         if changed:
             _write_json_file(PENDING_GEMINI_QUEUE_PATH, items)
+    _refresh_gemini_queue_status_counts()
 
 
 def _remove_pending_gemini(cache_path):
@@ -757,11 +949,52 @@ def _remove_pending_gemini(cache_path):
         if cache_path in _pending_gemini_replacements:
             _pending_gemini_replacements.pop(cache_path, None)
             _save_pending_gemini_queue_locked()
+    _refresh_gemini_queue_status_counts()
 
 
 def _is_pending_gemini(cache_path):
     with _pending_gemini_lock:
         return cache_path in _pending_gemini_replacements
+
+
+def set_preferred_pending_source(source_path=None):
+    global _preferred_pending_source
+    _preferred_pending_source = _normalize_source_path(source_path)
+
+
+def _next_pending_gemini_item():
+    preferred_source = _preferred_pending_source
+    with _pending_gemini_lock:
+        pending_items = list(_pending_gemini_replacements.items())
+    if not pending_items:
+        return None
+
+    def _sort_key(entry):
+        cache_path, item = entry
+        item = item if isinstance(item, dict) else {}
+        source_value = _normalize_source_path(item.get("source_path"))
+        created_at = int(item.get("created_at") or 0)
+        preferred_rank = 0 if preferred_source and source_value == preferred_source else 1
+        return (preferred_rank, created_at, str(cache_path or ""))
+
+    return min(pending_items, key=_sort_key)
+
+
+def _move_pending_gemini_entry(old_cache_path, new_cache_path, *, text=None, source_path=None):
+    old_cache_path = _canonicalize_cache_path(old_cache_path, text=text, source_path=None)
+    new_cache_path = _canonicalize_cache_path(new_cache_path, text=text, source_path=source_path)
+    if not old_cache_path or not new_cache_path:
+        return False
+    with _pending_gemini_lock:
+        existing = _pending_gemini_replacements.pop(old_cache_path, None)
+        if not isinstance(existing, dict):
+            return False
+        existing["text"] = _normalize_text(text or existing.get("text"), ensure_sentence_end=False)
+        existing["source_path"] = str(source_path or "").strip() or None
+        _pending_gemini_replacements[new_cache_path] = existing
+        _save_pending_gemini_queue_locked()
+    _refresh_gemini_queue_status_counts()
+    return True
 
 
 def _enqueue_existing_cache_for_gemini_replacement(text, cache_path, source_path=None):
@@ -776,15 +1009,20 @@ def _enqueue_existing_cache_for_gemini_replacement(text, cache_path, source_path
             "text": normalized,
             "source_path": str(source_path or "").strip() or None,
             "created_at": int(time.time()),
+            "desired_backend": _current_online_provider(),
         }
         _save_pending_gemini_queue_locked()
+    _refresh_gemini_queue_status_counts()
     _start_pending_gemini_worker()
 
 
 def _cache_requires_gemini_replacement(cache_path):
     metadata = _load_cache_metadata(cache_path)
     backend = str(metadata.get("backend") or "").strip().lower()
-    return backend != "gemini"
+    desired_backend = str(metadata.get("desired_backend") or _current_online_provider()).strip().lower()
+    if _is_online_backend(desired_backend):
+        return backend != desired_backend
+    return backend != _current_online_provider()
 
 
 def _has_valid_gemini_cache(cache_path):
@@ -804,8 +1042,8 @@ def _save_word_cache_file(cache_path, wav_path, *, text=None, source_path=None, 
         "source_path": str(normalized_source or "").strip() or None,
     }
 
-    if actual_backend == "gemini":
-        shared_cache_path = _shared_word_cache_path(text or cache_path)
+    if _is_online_backend(actual_backend):
+        shared_cache_path = _provider_shared_word_cache_path(text or cache_path, provider=actual_backend)
         try:
             shared_payload = dict(payload)
             shared_payload["source_path"] = "shared"
@@ -846,6 +1084,132 @@ def cleanup_manual_session_cache():
             pass
         _remove_cache_metadata(path)
         _remove_pending_gemini(path)
+
+
+def rebind_manual_session_cache_to_source(texts, source_path):
+    target_source = _normalize_source_path(source_path)
+    if not target_source or target_source in {RECENT_WRONG_SOURCE_KEY, MANUAL_SESSION_SOURCE_KEY}:
+        return {"migrated": 0, "queued": 0, "removed": 0}
+
+    moved_cache = 0
+    moved_queue = 0
+    removed_manual = 0
+    seen = set()
+
+    for raw_text in texts or []:
+        normalized = _normalize_text(raw_text, ensure_sentence_end=False)
+        if not normalized:
+            continue
+        folded = normalized.casefold()
+        if folded in seen:
+            continue
+        seen.add(folded)
+
+        target_cache = _word_cache_path(normalized, source_path=target_source)
+        shared_cache = _shared_word_cache_path(normalized)
+        manual_candidates = []
+        for manual_source in (None, MANUAL_SESSION_SOURCE_KEY):
+            candidate = _word_cache_path(normalized, source_path=manual_source)
+            if candidate not in manual_candidates:
+                manual_candidates.append(candidate)
+
+        manual_cache = ""
+        manual_metadata = {}
+        manual_audio = ""
+        manual_pending = False
+        for candidate in manual_candidates:
+            candidate_metadata = _load_cache_metadata(candidate)
+            candidate_audio = _resolve_cache_audio_path(candidate)
+            candidate_pending = _is_pending_gemini(candidate)
+            if candidate_audio or candidate_metadata or candidate_pending:
+                manual_cache = candidate
+                manual_metadata = candidate_metadata
+                manual_audio = candidate_audio
+                manual_pending = candidate_pending
+                break
+        if not manual_cache:
+            manual_cache = manual_candidates[0]
+
+        target_has_valid_gemini = _has_valid_gemini_cache(target_cache)
+        target_has_any_audio = bool(_resolve_cache_audio_path(target_cache))
+
+        if manual_pending:
+            if not _is_pending_gemini(target_cache):
+                if _move_pending_gemini_entry(
+                    manual_cache,
+                    target_cache,
+                    text=normalized,
+                    source_path=target_source,
+                ):
+                    moved_queue += 1
+            else:
+                _remove_pending_gemini(manual_cache)
+
+        should_copy = bool(manual_audio) and (
+            not target_has_any_audio
+            or (
+                not target_has_valid_gemini
+                and _is_online_backend(str(manual_metadata.get("desired_backend") or "").strip().lower())
+            )
+        )
+        if should_copy:
+            payload = dict(manual_metadata or {})
+            payload["text"] = normalized
+            payload["source_path"] = target_source
+            if "backend" not in payload:
+                payload["backend"] = "unknown"
+            if "desired_backend" not in payload:
+                payload["desired_backend"] = _current_online_provider()
+            backend = str(payload.get("backend") or "").strip().lower()
+            desired_backend = str(payload.get("desired_backend") or "").strip().lower() or _current_online_provider()
+            try:
+                if _is_online_backend(backend) and _has_valid_gemini_cache(shared_cache):
+                    _write_source_alias_metadata(
+                        normalized,
+                        target_source,
+                        shared_cache,
+                        backend=backend,
+                        desired_backend=desired_backend,
+                    )
+                else:
+                    _copy_cache_file(manual_audio, target_cache, metadata=payload)
+                moved_cache += 1
+            except Exception:
+                pass
+        elif (
+            not target_has_any_audio
+            and _is_online_backend(str(manual_metadata.get("backend") or "").strip().lower())
+            and _has_valid_gemini_cache(shared_cache)
+        ):
+            try:
+                _write_source_alias_metadata(
+                    normalized,
+                    target_source,
+                    shared_cache,
+                    backend=str(manual_metadata.get("backend") or _current_online_provider()),
+                    desired_backend=str(manual_metadata.get("desired_backend") or _current_online_provider()),
+                )
+                moved_cache += 1
+            except Exception:
+                pass
+
+        # Clear the manual-session entry once the saved file has taken ownership.
+        try:
+            if os.path.exists(manual_cache):
+                os.remove(manual_cache)
+                removed_manual += 1
+        except Exception:
+            pass
+        if manual_metadata:
+            _remove_cache_metadata(manual_cache)
+            removed_manual += 1
+        with _manual_session_cache_lock:
+            for candidate in manual_candidates:
+                _manual_session_cache_paths.discard(candidate)
+
+    _cleanup_duplicate_source_cache_entries()
+    _collapse_existing_lightweight_source_caches()
+    return {"migrated": moved_cache, "queued": moved_queue, "removed": removed_manual}
 
 
 def cleanup_cache_for_source_path(source_path):
@@ -904,6 +1268,144 @@ def cleanup_cache_for_source_path(source_path):
     return removed
 
 
+def cleanup_word_audio_cache(text, source_path=None):
+    normalized = _normalize_text(text, ensure_sentence_end=False)
+    if not normalized:
+        return False
+    cache_path = _word_cache_path(normalized, source_path=source_path)
+    removed = False
+    try:
+        if os.path.exists(cache_path):
+            os.remove(cache_path)
+            removed = True
+    except Exception:
+        pass
+    metadata = _load_cache_metadata(cache_path)
+    if metadata:
+        _remove_cache_metadata(cache_path)
+        removed = True
+    if _is_pending_gemini(cache_path):
+        _remove_pending_gemini(cache_path)
+        removed = True
+    if not str(source_path or "").strip():
+        with _manual_session_cache_lock:
+            _manual_session_cache_paths.discard(cache_path)
+    return removed
+
+
+def rename_cache_source_path(old_source_path, new_source_path):
+    old_source = _normalize_source_path(old_source_path)
+    new_source = _normalize_source_path(new_source_path)
+    if not old_source or not new_source or old_source == new_source:
+        return {"migrated": 0, "queued": 0}
+
+    old_dir = _source_word_cache_dir(source_path=old_source)
+    moved_count = 0
+    queued_count = 0
+    migrated_pending = {}
+
+    if os.path.isdir(old_dir):
+        cache_paths = set()
+        for root, _, names in os.walk(old_dir):
+            for name in names:
+                lower_name = name.lower()
+                if lower_name.endswith(".wav"):
+                    cache_paths.add(os.path.join(root, name))
+                elif lower_name.endswith(".wav.json"):
+                    cache_paths.add(os.path.join(root, name[:-5]))
+
+        for old_cache_path in sorted(cache_paths):
+            old_metadata = _load_cache_metadata(old_cache_path)
+            text_value = _normalize_text((old_metadata or {}).get("text"), ensure_sentence_end=False)
+            if text_value:
+                new_cache_path = _word_cache_path(text_value, source_path=new_source)
+            else:
+                rel_path = os.path.relpath(old_cache_path, old_dir)
+                new_cache_path = os.path.join(_source_word_cache_dir(source_path=new_source), rel_path)
+            new_metadata = dict(old_metadata or {})
+            new_metadata["source_path"] = new_source
+            linked_shared = str(new_metadata.get("linked_shared_path") or "").strip()
+            old_audio_exists = os.path.exists(old_cache_path)
+            try:
+                if linked_shared and not old_audio_exists:
+                    if text_value:
+                        _write_source_alias_metadata(
+                            text_value,
+                            new_source,
+                            linked_shared,
+                            backend=str(new_metadata.get("backend") or _current_online_provider()),
+                            desired_backend=str(new_metadata.get("desired_backend") or _current_online_provider()),
+                        )
+                        moved_count += 1
+                elif old_audio_exists:
+                    _copy_cache_file(old_cache_path, new_cache_path, metadata=new_metadata)
+                    moved_count += 1
+                elif new_metadata:
+                    _save_cache_metadata(new_cache_path, new_metadata)
+                    moved_count += 1
+            except Exception:
+                continue
+
+            if _is_pending_gemini(old_cache_path):
+                pending_item = dict(_pending_gemini_replacements.get(old_cache_path) or {})
+                if pending_item:
+                    pending_item["source_path"] = new_source
+                    migrated_pending[new_cache_path] = pending_item
+                    queued_count += 1
+                _remove_pending_gemini(old_cache_path)
+
+            try:
+                if os.path.exists(old_cache_path):
+                    os.remove(old_cache_path)
+            except Exception:
+                pass
+            _remove_cache_metadata(old_cache_path)
+
+        for root, _, _ in os.walk(old_dir, topdown=False):
+            try:
+                if os.path.isdir(root) and not os.listdir(root):
+                    os.rmdir(root)
+            except Exception:
+                pass
+        try:
+            if os.path.isdir(old_dir) and not os.listdir(old_dir):
+                os.rmdir(old_dir)
+        except Exception:
+            pass
+
+    with _pending_gemini_lock:
+        updated = False
+        for cache_path, item in list(_pending_gemini_replacements.items()):
+            if not isinstance(item, dict):
+                continue
+            if _normalize_source_path(item.get("source_path")) != old_source:
+                continue
+            text_value = _normalize_text(item.get("text"), ensure_sentence_end=False)
+            if text_value:
+                new_cache_path = _word_cache_path(text_value, source_path=new_source)
+            else:
+                old_dir = _source_word_cache_dir(source_path=old_source)
+                rel_path = os.path.relpath(cache_path, old_dir) if old_dir and os.path.commonpath([old_dir, cache_path]) == old_dir else os.path.basename(cache_path)
+                new_cache_path = os.path.join(_source_word_cache_dir(source_path=new_source), rel_path)
+            migrated_pending[new_cache_path] = {
+                "text": text_value or item.get("text"),
+                "source_path": new_source,
+                "created_at": int(item.get("created_at") or time.time()),
+            }
+            _pending_gemini_replacements.pop(cache_path, None)
+            queued_count += 1
+            updated = True
+        for cache_path, item in migrated_pending.items():
+            _pending_gemini_replacements[cache_path] = item
+            updated = True
+        if updated:
+            _save_pending_gemini_queue_locked()
+
+    _cleanup_duplicate_source_cache_entries()
+    _collapse_existing_lightweight_source_caches()
+    return {"migrated": moved_count, "queued": queued_count}
+
+
 def _is_gemini_rate_limited_error(error):
     message = str(error or "").lower()
     return (
@@ -911,6 +1413,7 @@ def _is_gemini_rate_limited_error(error):
         or "resource_exhausted" in message
         or "429" in message
         or "quota exceeded" in message
+        or "too many requests" in message
     )
 
 
@@ -970,8 +1473,8 @@ def get_word_audio_cache_info(text, source_path=None):
         "uses_shared_cache": bool(playable_cache and os.path.abspath(playable_cache) == os.path.abspath(shared_path) and os.path.abspath(cache_path) != os.path.abspath(shared_path)),
         "backend": backend or None,
         "backend_label": _backend_label_from_key(backend) if backend else "",
-        "desired_backend": (desired_backend or ("gemini" if pending else None)),
-        "desired_backend_label": _backend_label_from_key(desired_backend or "gemini") if (desired_backend or pending) else "",
+        "desired_backend": (desired_backend or (_current_online_provider() if pending else None)),
+        "desired_backend_label": _backend_label_from_key(desired_backend or _current_online_provider()) if (desired_backend or pending) else "",
         "pending_gemini_replacement": bool(pending),
         "metadata": dict(metadata) if isinstance(metadata, dict) else {},
     }
@@ -1093,10 +1596,10 @@ def _extract_error_message(http_error):
     return str(error.get("message") or data.get("message") or raw or http_error)
 
 
-def _request_gemini_tts(text, *, short_text):
-    api_key = get_gemini_api_key()
+def _request_gemini_tts(text, *, short_text, api_key=None):
+    api_key = str(api_key or get_tts_api_key()).strip()
     if not api_key:
-        raise RuntimeError("Gemini API key is empty.")
+        raise RuntimeError("TTS API key is empty.")
 
     prompt = TTS_STYLE_SHORT if short_text else TTS_STYLE_LONG
     payload = {
@@ -1132,6 +1635,49 @@ def _request_gemini_tts(text, *, short_text):
         raise RuntimeError(f"Gemini TTS request failed: {e}") from e
 
 
+def _request_elevenlabs_tts(text, *, short_text, api_key=None):
+    api_key = str(api_key or get_tts_api_key()).strip()
+    if not api_key:
+        raise RuntimeError("TTS API key is empty.")
+
+    payload = {
+        "text": str(text or ""),
+        "model_id": ELEVENLABS_MODEL_ID,
+        "voice_settings": {
+            "stability": 0.45,
+            "similarity_boost": 0.75,
+            "style": 0.1 if short_text else 0.25,
+            "use_speaker_boost": True,
+        },
+    }
+    req = urllib.request.Request(
+        ELEVENLABS_URL,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "xi-api-key": api_key,
+            "Content-Type": "application/json",
+            "Accept": "audio/pcm",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=180) as response:
+            return response.read()
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(_extract_error_message(e)) from e
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"ElevenLabs TTS request failed: {e.reason}") from e
+    except Exception as e:
+        raise RuntimeError(f"ElevenLabs TTS request failed: {e}") from e
+
+
+def _request_online_tts(text, *, short_text, provider=None, api_key=None):
+    backend = str(provider or _primary_online_provider()).strip().lower()
+    if backend == "elevenlabs":
+        return _request_elevenlabs_tts(text, short_text=short_text, api_key=api_key), "elevenlabs"
+    return _request_gemini_tts(text, short_text=short_text, api_key=api_key), "gemini"
+
+
 def _extract_pcm_bytes(data):
     candidates = data.get("candidates") or []
     for candidate in candidates:
@@ -1143,6 +1689,89 @@ def _extract_pcm_bytes(data):
             if encoded and "pcm" in mime_type:
                 return base64.b64decode(encoded)
     raise RuntimeError("Gemini TTS returned no audio.")
+
+
+def validate_gemini_tts_api_key(api_key, timeout=25):
+    if not str(api_key or "").strip():
+        raise RuntimeError("TTS API key is empty.")
+    prompt = TTS_STYLE_SHORT
+    payload = {
+        "contents": [{"parts": [{"text": f"{prompt}\n\nText:\nTest"}]}],
+        "generationConfig": {
+            "responseModalities": ["AUDIO"],
+            "speechConfig": {
+                "voiceConfig": {
+                    "prebuiltVoiceConfig": {
+                        "voiceName": TTS_VOICE_NAME,
+                    }
+                }
+            },
+        },
+    }
+    req = urllib.request.Request(
+        TTS_URL,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "x-goog-api-key": str(api_key).strip(),
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            data = json.loads(response.read().decode("utf-8", errors="ignore"))
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(_extract_error_message(e)) from e
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"Gemini TTS request failed: {e.reason}") from e
+    except Exception as e:
+        raise RuntimeError(f"Gemini TTS request failed: {e}") from e
+    _extract_pcm_bytes(data)
+    return True
+
+
+def validate_elevenlabs_tts_api_key(api_key, timeout=25):
+    if not str(api_key or "").strip():
+        raise RuntimeError("TTS API key is empty.")
+    payload = {
+        "text": "Test",
+        "model_id": ELEVENLABS_MODEL_ID,
+        "voice_settings": {
+            "stability": 0.45,
+            "similarity_boost": 0.75,
+            "style": 0.1,
+            "use_speaker_boost": True,
+        },
+    }
+    req = urllib.request.Request(
+        ELEVENLABS_URL,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "xi-api-key": str(api_key).strip(),
+            "Content-Type": "application/json",
+            "Accept": "audio/pcm",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            data = response.read()
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(_extract_error_message(e)) from e
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"ElevenLabs TTS request failed: {e.reason}") from e
+    except Exception as e:
+        raise RuntimeError(f"ElevenLabs TTS request failed: {e}") from e
+    if not data:
+        raise RuntimeError("ElevenLabs TTS returned no audio.")
+    return True
+
+
+def validate_tts_api_key(api_key, provider, timeout=25):
+    backend = str(provider or "").strip().lower()
+    if backend == "elevenlabs":
+        return validate_elevenlabs_tts_api_key(api_key, timeout=timeout)
+    return validate_gemini_tts_api_key(api_key, timeout=timeout)
 
 
 def _write_pcm_to_wav_path(pcm_bytes, sample_rate, volume):
@@ -1229,6 +1858,47 @@ def _synthesize_with_gemini(text, volume, *, short_text):
     return _write_pcm_to_wav_path(pcm_bytes, sample_rate=TTS_SAMPLE_RATE, volume=volume), "Gemini TTS", True
 
 
+def _synthesize_with_elevenlabs(text, volume, *, short_text):
+    pcm_bytes = _request_elevenlabs_tts(text, short_text=short_text)
+    return _write_pcm_to_wav_path(pcm_bytes, sample_rate=TTS_SAMPLE_RATE, volume=volume), "ElevenLabs TTS", True
+
+
+def _synthesize_with_gemini_fallback(text, volume, *, short_text, api_key=None):
+    data = _request_gemini_tts(text, short_text=short_text, api_key=api_key)
+    pcm_bytes = _extract_pcm_bytes(data)
+    return _write_pcm_to_wav_path(pcm_bytes, sample_rate=TTS_SAMPLE_RATE, volume=volume), "Gemini TTS", True
+
+
+def _synthesize_with_elevenlabs_fallback(text, volume, *, short_text, api_key=None):
+    pcm_bytes = _request_elevenlabs_tts(text, short_text=short_text, api_key=api_key)
+    return _write_pcm_to_wav_path(pcm_bytes, sample_rate=TTS_SAMPLE_RATE, volume=volume), "ElevenLabs TTS", True
+
+
+def _synthesize_with_online_provider(text, volume, *, short_text, provider, api_key=None):
+    backend = str(provider or _primary_online_provider()).strip().lower()
+    if backend == "elevenlabs":
+        return _synthesize_with_elevenlabs_fallback(text, volume=volume, short_text=short_text, api_key=api_key)
+    return _synthesize_with_gemini_fallback(text, volume=volume, short_text=short_text, api_key=api_key)
+
+
+def _synthesize_with_online(text, volume, *, short_text):
+    primary = _primary_online_provider()
+    try:
+        return _synthesize_with_online_provider(text, volume=volume, short_text=short_text, provider=primary)
+    except Exception:
+        secondary = _secondary_online_provider(primary)
+        if secondary:
+            fallback_key = get_llm_api_key() if secondary == "gemini" else get_tts_api_key()
+            return _synthesize_with_online_provider(
+                text,
+                volume=volume,
+                short_text=short_text,
+                provider=secondary,
+                api_key=fallback_key,
+            )
+        raise
+
+
 def _synthesize_with_kokoro(text, volume, rate_ratio):
     kokoro = _ensure_kokoro()
     voice_id = get_voice_id()
@@ -1296,7 +1966,7 @@ def _synthesize_with_selected_source(text, volume, rate_ratio, *, short_text):
         return _synthesize_with_piper(text, volume=volume, rate_ratio=rate_ratio), False
 
     try:
-        return _synthesize_with_gemini(text, volume=volume, short_text=short_text), False
+        return _synthesize_with_user_online(text, volume=volume, short_text=short_text), False
     except Exception:
         if kokoro_ready():
             return (
@@ -1319,12 +1989,12 @@ def _synthesize_to_wav(text, volume, rate_ratio, *, short_text=False, source_pat
 
     if short_text:
         cache_path = _ensure_source_gemini_cache(text, source_path=source_path)
-        if _selected_source_backend_key() == "gemini" and _has_valid_gemini_cache(cache_path):
+        if _is_online_backend(_selected_source_backend_key()) and _has_valid_gemini_cache(cache_path):
             playable_cache = _resolve_cache_audio_path(cache_path) or cache_path
             if request_token is not None:
-                _set_backend_status(request_token, "Gemini TTS", from_cache=True, fallback=False)
+                _set_backend_status(request_token, _online_provider_label(), from_cache=True, fallback=False)
             return _clone_to_temp(playable_cache)
-        if _selected_source_backend_key() == "gemini" and os.path.exists(cache_path):
+        if _is_online_backend(_selected_source_backend_key()) and os.path.exists(cache_path):
             metadata = _load_cache_metadata(cache_path)
             backend_key = str(metadata.get("backend") or "").strip().lower()
             if backend_key in {"piper", "kokoro"}:
@@ -1353,7 +2023,7 @@ def _synthesize_to_wav(text, volume, rate_ratio, *, short_text=False, source_pat
                     cache_path,
                     {
                         "backend": "unknown",
-                        "desired_backend": "gemini",
+                        "desired_backend": _current_online_provider(),
                         "source_path": str(source_path or "").strip() or None,
                     },
                 )
@@ -1381,11 +2051,13 @@ def _synthesize_to_wav(text, volume, rate_ratio, *, short_text=False, source_pat
         return wav_path
 
     try:
-        wav_path, backend_label, _can_cache = _synthesize_with_gemini(
+        wav_path, backend_label, _can_cache = _synthesize_with_user_online(
             normalized,
             volume=volume,
             short_text=short_text,
         )
+        actual_online_backend = _backend_key_from_label(backend_label)
+        desired_online_backend = _primary_online_provider()
         if request_token is not None:
             _set_backend_status(request_token, backend_label, from_cache=False, fallback=False)
         if short_text:
@@ -1395,9 +2067,11 @@ def _synthesize_to_wav(text, volume, rate_ratio, *, short_text=False, source_pat
                     wav_path,
                     text=normalized,
                     source_path=source_path,
-                    backend="gemini",
-                    desired_backend="gemini",
+                    backend=actual_online_backend,
+                    desired_backend=desired_online_backend,
                 )
+                if actual_online_backend != desired_online_backend:
+                    _enqueue_existing_cache_for_gemini_replacement(text, cache_path, source_path=source_path)
             except Exception:
                 pass
         return wav_path
@@ -1416,7 +2090,7 @@ def _synthesize_to_wav(text, volume, rate_ratio, *, short_text=False, source_pat
                         text=normalized,
                         source_path=source_path,
                         backend=placeholder_backend,
-                        desired_backend="gemini",
+                        desired_backend=_current_online_provider(),
                     )
                 except Exception:
                     pass
@@ -1446,16 +2120,20 @@ def _start_pending_gemini_worker():
         if _pending_gemini_worker_running or not _pending_gemini_replacements:
             return
         _pending_gemini_worker_running = True
+    _set_gemini_queue_status(worker_running=True)
+    _refresh_gemini_queue_status_counts()
+    with _gemini_queue_status_lock:
+        if _gemini_queue_status.get("state") in {"idle", ""}:
+            _gemini_queue_status["state"] = "ok"
 
     def _worker():
         global _pending_gemini_worker_running
         try:
             while True:
-                with _pending_gemini_lock:
-                    pending_items = list(_pending_gemini_replacements.items())
-                if not pending_items:
+                next_item = _next_pending_gemini_item()
+                if not next_item:
                     return
-                cache_path_local, item = pending_items[0]
+                cache_path_local, item = next_item
                 if not isinstance(item, dict):
                     _remove_pending_gemini(cache_path_local)
                     continue
@@ -1464,11 +2142,21 @@ def _start_pending_gemini_worker():
                 if not normalized_text:
                     _remove_pending_gemini(cache_path_local)
                     continue
+                desired_backend = str(item.get("desired_backend") or _current_online_provider()).strip().lower()
+                if desired_backend not in {"gemini", "elevenlabs"}:
+                    desired_backend = _current_online_provider()
                 try:
-                    wav_path, _label, _can_cache = _synthesize_with_gemini(
-                        normalized_text,
-                        volume=1.0,
-                        short_text=True,
+                    _wait_for_gemini_queue_slot(provider=desired_backend)
+                    wav_path, _label, _can_cache = (
+                        _synthesize_with_elevenlabs(normalized_text, volume=1.0, short_text=True)
+                        if desired_backend == "elevenlabs"
+                        else _synthesize_with_gemini(normalized_text, volume=1.0, short_text=True)
+                    )
+                    _set_gemini_queue_status(
+                        state="ok",
+                        next_retry_at=0.0,
+                        last_success_at=time.time(),
+                        last_error="",
                     )
                     try:
                         _save_word_cache_file(
@@ -1476,8 +2164,8 @@ def _start_pending_gemini_worker():
                             wav_path,
                             text=normalized_text,
                             source_path=source_path,
-                            backend="gemini",
-                            desired_backend="gemini",
+                            backend=desired_backend,
+                            desired_backend=desired_backend,
                         )
                     finally:
                         try:
@@ -1486,7 +2174,47 @@ def _start_pending_gemini_worker():
                             pass
                     _remove_pending_gemini(cache_path_local)
                 except Exception as exc:
+                    secondary_backend = _secondary_online_provider(desired_backend)
+                    if secondary_backend:
+                        try:
+                            fallback_key = get_llm_api_key() if secondary_backend == "gemini" else get_tts_api_key()
+                            wav_path, _label, _can_cache = _synthesize_with_online_provider(
+                                normalized_text,
+                                volume=1.0,
+                                short_text=True,
+                                provider=secondary_backend,
+                                api_key=fallback_key,
+                            )
+                            try:
+                                _save_word_cache_file(
+                                    cache_path_local,
+                                    wav_path,
+                                    text=normalized_text,
+                                    source_path=source_path,
+                                    backend=secondary_backend,
+                                    desired_backend=desired_backend,
+                                )
+                            finally:
+                                try:
+                                    os.remove(wav_path)
+                                except Exception:
+                                    pass
+                            _set_gemini_queue_status(
+                                state="ok",
+                                next_retry_at=time.time() + _queue_interval_for_provider(desired_backend),
+                                last_success_at=time.time(),
+                                last_error="",
+                            )
+                            continue
+                        except Exception:
+                            pass
                     if _is_gemini_rate_limited_error(exc):
+                        cooldown_seconds = _rate_limit_cooldown_for_provider(desired_backend)
+                        _set_gemini_queue_status(
+                            state="rate_limited",
+                            next_retry_at=time.time() + cooldown_seconds,
+                            last_error=str(exc),
+                        )
                         if not os.path.exists(cache_path_local):
                             try:
                                 (wav_path, _label, _can_cache), placeholder_backend = _synthesize_with_local_placeholder(
@@ -1501,7 +2229,7 @@ def _start_pending_gemini_worker():
                                         text=normalized_text,
                                         source_path=source_path,
                                         backend=placeholder_backend,
-                                        desired_backend="gemini",
+                                        desired_backend=desired_backend,
                                     )
                                 finally:
                                     try:
@@ -1510,12 +2238,26 @@ def _start_pending_gemini_worker():
                                         pass
                             except Exception:
                                 pass
-                        threading.Event().wait(GEMINI_RATE_LIMIT_COOLDOWN_SECONDS)
+                        threading.Event().wait(cooldown_seconds)
                         continue
+                    _set_gemini_queue_status(
+                        state="error",
+                        next_retry_at=0.0,
+                        last_error=str(exc),
+                    )
                     _remove_pending_gemini(cache_path_local)
         finally:
             with _pending_gemini_lock:
                 _pending_gemini_worker_running = False
+            _refresh_gemini_queue_status_counts()
+            with _pending_gemini_lock:
+                still_pending = bool(_pending_gemini_replacements)
+            if not still_pending:
+                with _gemini_queue_status_lock:
+                    if _gemini_queue_status.get("state") != "rate_limited":
+                        _gemini_queue_status["state"] = "idle"
+                    _gemini_queue_status["next_retry_at"] = 0.0
+                    _gemini_queue_status["worker_running"] = False
         _start_pending_gemini_worker()
 
     threading.Thread(target=_worker, daemon=True).start()
@@ -1646,7 +2388,7 @@ def speak_stream_async(text, volume=1.0, rate_ratio=1.0, cancel_before=False, ch
                         lang="en-gb",
                     )
                 else:
-                    wav_path, _label, _can_cache = _synthesize_with_gemini(
+                    wav_path, _label, _can_cache = _synthesize_with_user_online(
                         chunk,
                         volume=volume,
                         short_text=False,
@@ -1759,7 +2501,7 @@ def get_runtime_label():
         return "Kokoro (Offline)"
     if source == SOURCE_PIPER:
         return "Piper (Local)"
-    return "Gemini API"
+    return _online_provider_label()
 
 
 _migrate_legacy_word_wrapper_layout()

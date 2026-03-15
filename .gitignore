@@ -20,5 +20,6 @@ data/dictation_stats.json
 data/corpus_index.db
 data/nltk_data/
 data/audio_cache/
+data/app.instance.lock
 .*.wordspeaker_audio/
 vendor/

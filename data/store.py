@@ -272,6 +272,23 @@ class WordStore:
         items.sort(key=lambda item: (item.get("wrong_count", 0), item.get("last_seen", "")), reverse=True)
         return items[: max(1, int(limit or 50))]
 
+    def clear_wrong_word(self, word):
+        token = str(word or "").strip()
+        if not token:
+            return False
+        stats = self.load_dictation_stats()
+        entry = stats.get(token)
+        if not isinstance(entry, dict):
+            return False
+        entry["wrong_count"] = 0
+        entry["last_wrong_input"] = ""
+        entry["last_wrong_type"] = ""
+        entry["last_result"] = "correct"
+        entry["last_seen"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        stats[token] = entry
+        self.save_dictation_stats(stats)
+        return True
+
     def add_history(self, path):
         history = self.load_history()
         path = os.path.abspath(path)
@@ -300,6 +317,30 @@ class WordStore:
                 json.dump(history, f, ensure_ascii=False, indent=2)
         except Exception:
             pass
+        return history
+
+    def rename_history_path(self, old_path, new_path):
+        old_target = os.path.abspath(str(old_path or "").strip())
+        new_target = os.path.abspath(str(new_path or "").strip())
+        if not old_target or not new_target:
+            return []
+        history = self.load_history()
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        for item in history:
+            path = os.path.abspath(str(item.get("path") or "").strip()) if str(item.get("path") or "").strip() else ""
+            if path != old_target:
+                continue
+            item["path"] = new_target
+            item["name"] = os.path.basename(new_target)
+            item["time"] = now
+            break
+        try:
+            with open(self.history_path, "w", encoding="utf-8") as f:
+                json.dump(history, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+        if self.current_source_path and os.path.abspath(self.current_source_path) == old_target:
+            self.current_source_path = new_target
         return history
 
     def add_wrong_word(self, word, user_input=""):
