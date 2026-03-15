@@ -1,6 +1,7 @@
 argostranslate
 piper-tts
 spacy
+spacy-wordnet
 spacy-lookups-data
 python-docx
 pymupdf

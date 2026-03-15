@@ -15,8 +15,10 @@ data/word_stats.json
 data/models/
 data/translation_cache.json
 data/pos_cache.json
+data/synonyms_cache.json
 data/dictation_stats.json
 data/corpus_index.db
+data/nltk_data/
 data/audio_cache/
 .*.wordspeaker_audio/
 vendor/

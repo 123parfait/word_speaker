@@ -722,6 +722,30 @@ def list_documents(limit=200):
         conn.close()
 
 
+def remove_document(document_path):
+    ensure_schema()
+    target = os.path.abspath(str(document_path or "").strip())
+    if not target:
+        return 0
+    conn = _get_connection()
+    try:
+        row = conn.execute("SELECT id FROM documents WHERE path = ?", (target,)).fetchone()
+        if not row:
+            return 0
+        document_id = int(row["id"])
+        conn.execute(
+            "DELETE FROM sentence_lemmas WHERE sentence_id IN (SELECT id FROM sentences WHERE document_id = ?)",
+            (document_id,),
+        )
+        conn.execute("DELETE FROM sentences WHERE document_id = ?", (document_id,))
+        conn.execute("DELETE FROM chunks WHERE document_id = ?", (document_id,))
+        conn.execute("DELETE FROM documents WHERE id = ?", (document_id,))
+        conn.commit()
+        return 1
+    finally:
+        conn.close()
+
+
 def search_corpus(query, limit=50, document_path=None):
     ensure_schema()
     q = _clean_line(query)

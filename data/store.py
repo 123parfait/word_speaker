@@ -77,6 +77,9 @@ class WordStore:
     def has_current_source_file(self):
         return bool(self.current_source_path and os.path.exists(self.current_source_path))
 
+    def detach_current_source(self):
+        self.current_source_path = None
+
     def save_to_current_file(self):
         if not self.current_source_path:
             return False
