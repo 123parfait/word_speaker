@@ -788,6 +788,7 @@ class MainView(ttk.Frame):
         self.dictation_paused = False
         self.dictation_seconds_left = 0
         self.dictation_session_source_path = None
+        self.dictation_session_list_mode = "all"
         self.dictation_previous_session_accuracy = self.store.get_last_dictation_accuracy()
         self.dictation_answer_review_popup = None
         self.dictation_answer_review_tree = None
@@ -2207,6 +2208,7 @@ class MainView(ttk.Frame):
             self.show_info("no_words_for_dictation")
             self.reset_dictation_view()
             return
+        self.dictation_session_list_mode = str(self.dictation_list_mode_var.get() or "all").strip().lower()
         self.dictation_session_source_path = self._get_dictation_preview_source_path()
         self.dictation_previous_session_accuracy = self.store.get_last_dictation_accuracy()
         safe_start = max(0, min(int(start_index or 0), max(0, len(self.dictation_pool) - 1)))
@@ -2393,7 +2395,7 @@ class MainView(ttk.Frame):
         if not replaced:
             self.dictation_session_attempts.append(attempt_entry)
         if is_correct:
-            if self.dictation_session_source_path == self._get_recent_wrong_cache_source_path():
+            if self.dictation_session_list_mode == "recent":
                 self.store.clear_wrong_word(target)
                 tts_cleanup_word_audio_cache(target, source_path=self._get_recent_wrong_cache_source_path())
                 for item in self.dictation_session_attempts:
@@ -2468,6 +2470,7 @@ class MainView(ttk.Frame):
         self.dictation_index = -1
         self.dictation_current_word = ""
         self.dictation_session_source_path = None
+        self.dictation_session_list_mode = "all"
         self.dictation_session_attempts = []
         self._cancel_dictation_timer()
         self._cancel_dictation_feedback_reset()
@@ -3030,21 +3033,35 @@ class MainView(ttk.Frame):
             messagebox.showinfo("Info", "No valid words found.")
             return False
         self.cancel_word_edit()
+        keep_source_binding = self.store.has_current_source_file()
 
         if mode == "append":
             merged_words = list(self.store.words) + normalized_words
             merged_notes = list(self.store.notes) + normalized_notes
-            self.store.set_words(merged_words, merged_notes)
-            self._mark_manual_words_dirty()
+            self.store.set_words(merged_words, merged_notes, preserve_source=keep_source_binding)
             self.render_words(merged_words)
             self._update_word_stats_from_manual_input(normalized_words)
             status_text = f"Appended {len(normalized_words)} words."
         else:
-            self.store.set_words(normalized_words, normalized_notes)
-            self._mark_manual_words_dirty()
+            self.store.set_words(normalized_words, normalized_notes, preserve_source=keep_source_binding)
             self.render_words(normalized_words)
             self._update_word_stats_from_manual_input(normalized_words)
             status_text = f"Loaded {len(normalized_words)} words."
+        if keep_source_binding:
+            saved = self._save_words_back_to_source()
+            if saved:
+                self.manual_source_dirty = False
+                suffix = " Saved to source file." if self.ui_language_var.get() == "en" else " 已保存到源文件。"
+                status_text += suffix
+            else:
+                suffix = (
+                    " Save to source file failed; changes are kept in memory."
+                    if self.ui_language_var.get() == "en"
+                    else " 保存源文件失败，修改暂时只保留在内存中。"
+                )
+                status_text += suffix
+        else:
+            self._mark_manual_words_dirty()
         self.reset_playback_state()
         self.status_var.set(status_text)
         return True
@@ -6160,6 +6177,17 @@ class MainView(ttk.Frame):
             set_voice_source(SOURCE_GEMINI, "gemini-kore", None)
             return
         source, voice_id, voice_label = data
+        if source == "kokoro" and not kokoro_ready():
+            set_voice_source(SOURCE_GEMINI, "gemini-kore", None)
+            self.refresh_voice_list()
+            messagebox.showinfo(
+                "Kokoro Not Ready",
+                "Kokoro is listed for convenience, but it is not installed yet.\n\n"
+                "To enable it, add the Kokoro model files under:\n"
+                "data/models/kokoro/\n\n"
+                "The source has been switched back to the online TTS provider for now.",
+            )
+            return
         if source == "piper" and not piper_ready():
             if kokoro_ready():
                 set_voice_source(SOURCE_KOKORO, "bf_emma", "Kokoro English (UK)")

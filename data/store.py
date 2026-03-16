@@ -23,13 +23,14 @@ class WordStore:
         self.notes = []
         self.current_source_path = None
 
-    def set_words(self, words, notes=None):
+    def set_words(self, words, notes=None, preserve_source=False):
         self.words = list(words)
         base_notes = list(notes or [])
         if len(base_notes) < len(self.words):
             base_notes.extend([""] * (len(self.words) - len(base_notes)))
         self.notes = base_notes[: len(self.words)]
-        self.current_source_path = None
+        if not preserve_source:
+            self.current_source_path = None
 
     def load_from_file(self, path):
         words = []

@@ -19,6 +19,15 @@ def get_kokoro_paths():
     return str(KOKORO_MODEL), str(KOKORO_VOICES)
 
 
+def get_kokoro_placeholder_voice():
+    return {
+        "source": "kokoro",
+        "id": "kokoro:not-ready",
+        "name": "Kokoro (Not Ready)",
+        "languages": ["local"],
+    }
+
+
 def _piper_model_candidates():
     if not PIPER_DIR.exists():
         return []
@@ -100,6 +109,8 @@ def list_system_voices():
                 "languages": ["en-GB"],
             }
         )
+    else:
+        voices.append(get_kokoro_placeholder_voice())
     if piper_ready():
         voices.extend(get_piper_voices())
     else:

@@ -2,7 +2,12 @@
 import sys
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import (
+    collect_all,
+    collect_data_files,
+    collect_dynamic_libs,
+    collect_submodules,
+)
 
 
 ROOT = Path(globals().get("SPECPATH", ".")).resolve()
@@ -23,20 +28,15 @@ datas = [
     (str(ROOT / "data" / "nltk_data"), "data/nltk_data"),
 ]
 binaries = []
-hiddenimports = []
+hiddenimports = [
+    "docx",
+    "fitz",
+    "argostranslate.package",
+    "argostranslate.translate",
+    "spacy_wordnet.wordnet_annotator",
+]
 
-for package_name in (
-    "argostranslate",
-    "kokoro_onnx",
-    "nltk",
-    "onnxruntime",
-    "numpy",
-    "phonemizer",
-    "espeakng_loader",
-    "piper",
-    "spacy",
-    "spacy_wordnet",
-):
+for package_name in ("piper", "phonemizer", "espeakng_loader"):
     try:
         pkg_datas, pkg_bins, pkg_hidden = collect_all(package_name)
     except Exception:
@@ -45,13 +45,21 @@ for package_name in (
     binaries += pkg_bins
     hiddenimports += pkg_hidden
 
-hiddenimports += [
-    "docx",
-    "fitz",
-    "pkg_resources._vendor.appdirs",
-    "pkg_resources._vendor.packaging",
-    "pkg_resources._vendor.pyparsing",
-]
+for package_name in ("argostranslate", "spacy", "spacy_wordnet"):
+    try:
+        datas += collect_data_files(package_name)
+    except Exception:
+        continue
+
+try:
+    binaries += collect_dynamic_libs("onnxruntime")
+except Exception:
+    pass
+
+try:
+    hiddenimports += collect_submodules("spacy_wordnet")
+except Exception:
+    pass
 
 a = Analysis(
     ["app.py"],
@@ -62,7 +70,41 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=[
+        "torch",
+        "functorch",
+        "tensorflow",
+        "tensorboard",
+        "mxnet",
+        "cupy",
+        "cupyx",
+        "matplotlib",
+        "mpl_toolkits",
+        "IPython",
+        "ipykernel",
+        "jupyter_client",
+        "jupyter_core",
+        "zmq",
+        "pyzmq",
+        "nbconvert",
+        "nbformat",
+        "jsonschema",
+        "jsonschema_specifications",
+        "referencing",
+        "rpds",
+        "numba",
+        "llvmlite",
+        "scipy",
+        "setuptools",
+        "pkg_resources",
+        "spacy.tests",
+        "spacy.cli.package",
+        "nltk.test",
+        "nltk.book",
+        "nltk.chat",
+        "onnxruntime.tools",
+        "argostranslate.cli",
+    ],
     noarchive=False,
     optimize=0,
 )

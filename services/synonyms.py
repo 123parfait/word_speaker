@@ -56,7 +56,7 @@ def _ensure_wordnet_ready():
 
         wn.ensure_loaded()
     except LookupError as exc:
-        raise RuntimeError("WordNet data is missing. Download 'wordnet' and 'omw-1.4' into data/nltk_data.") from exc
+        raise RuntimeError("WordNet data is missing. Download 'wordnet' into data/nltk_data.") from exc
     except Exception as exc:
         raise RuntimeError(f"spacy-wordnet is not ready: {exc}") from exc
     _wordnet_ready = True
