@@ -16,6 +16,7 @@
 - Right-click a word for edit, corpus search, sentence generation, synonyms, and cached-audio inspection
 - Dictation opens in a dedicated window with `All / Recent Wrong`
 - Dictation supports `Start From Word`, `Start Learning`, manual wrong-word addition, and answer review
+- The session-end summary now uses the same answer-review layout as the in-session `Answer Review` popup, including accuracy, previous accuracy, buttons, and the comparison table
 - Wrong answers are stored locally, sorted by mistake count, and shown in the recent wrong-word list with error causes
 - History items can be removed or renamed inside the app, with matching cache updates
 - Indexed corpus documents can be removed from the app without deleting the original files on disk

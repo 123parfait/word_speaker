@@ -791,7 +791,14 @@ class MainView(ttk.Frame):
         self.dictation_previous_session_accuracy = self.store.get_last_dictation_accuracy()
         self.dictation_answer_review_popup = None
         self.dictation_answer_review_tree = None
+        self.dictation_answer_review_accuracy_var = None
+        self.dictation_answer_review_last_var = None
+        self.dictation_answer_review_filter_var = None
         self.dictation_answer_review_show_wrong_only = False
+        self.dictation_result_review_tree = None
+        self.dictation_result_accuracy_var = None
+        self.dictation_result_last_var = None
+        self.dictation_result_filter_var = None
         self.right_notebook = None
         self.review_tab = None
         self.check_tab = None
@@ -1495,25 +1502,77 @@ class MainView(ttk.Frame):
         self.dictation_result_frame.grid(row=0, column=0, sticky="nsew")
         self.dictation_result_frame.grid_remove()
         self.dictation_result_frame.grid_columnconfigure(0, weight=1)
+        self.dictation_result_accuracy_var = tk.StringVar(value="0.00%")
+        self.dictation_result_last_var = tk.StringVar(value="-")
+        self.dictation_result_filter_var = tk.StringVar(value=self.tr("show_wrong_only"))
+
         ttk.Label(
             self.dictation_result_frame,
-            textvariable=self.dictation_summary_var,
-            font=("Segoe UI", 24, "bold"),
+            textvariable=self.dictation_result_accuracy_var,
+            font=("Segoe UI", 28, "bold"),
             style="Card.TLabel",
             foreground="#5b5cf0",
-        ).grid(row=0, column=0, sticky="n", pady=(40, 10))
-        ttk.Label(self.dictation_result_frame, text=self.tr("current_session_accuracy"), style="Card.TLabel").grid(
+        ).grid(row=0, column=0, sticky="n", pady=(18, 2))
+        ttk.Label(self.dictation_result_frame, text=self.tr("answer_review_so_far"), style="Card.TLabel").grid(
             row=1, column=0, sticky="n"
         )
+        result_previous_row = ttk.Frame(self.dictation_result_frame, style="Card.TFrame")
+        result_previous_row.grid(row=2, column=0, sticky="n", pady=(8, 12))
+        ttk.Label(
+            result_previous_row,
+            text=f"{self.tr('last_session_accuracy')}: ",
+            style="Card.TLabel",
+            foreground="#667085",
+        ).grid(row=0, column=0, sticky="e")
+        ttk.Label(
+            result_previous_row,
+            textvariable=self.dictation_result_last_var,
+            style="Card.TLabel",
+            foreground="#667085",
+        ).grid(row=0, column=1, sticky="w")
+
+        result_action_row = ttk.Frame(self.dictation_result_frame, style="Card.TFrame")
+        result_action_row.grid(row=3, column=0, sticky="ew", pady=(0, 10))
+        result_action_row.grid_columnconfigure(0, weight=1)
+        result_action_row.grid_columnconfigure(1, weight=1)
         ttk.Button(
-            self.dictation_result_frame,
-            text=self.tr("view_wrong_words"),
+            result_action_row,
+            textvariable=self.dictation_result_filter_var,
             style="Primary.TButton",
-            command=self.show_dictation_wrong_words,
-        ).grid(row=2, column=0, sticky="ew", padx=80, pady=(30, 10))
-        ttk.Button(self.dictation_result_frame, text=self.tr("back_to_list"), command=self.reset_dictation_view).grid(
-            row=3, column=0, sticky="ew", padx=80
+            command=self._toggle_dictation_answer_review_filter,
+        ).grid(row=0, column=0, sticky="ew", padx=(80, 10))
+        ttk.Button(
+            result_action_row,
+            text=self.tr("back_to_list"),
+            command=self.reset_dictation_view,
+        ).grid(row=0, column=1, sticky="ew", padx=(10, 80))
+
+        result_table_wrap = ttk.Frame(self.dictation_result_frame, style="Card.TFrame")
+        result_table_wrap.grid(row=4, column=0, sticky="nsew")
+        result_table_wrap.grid_columnconfigure(0, weight=1)
+        result_table_wrap.grid_rowconfigure(0, weight=1)
+        self.dictation_result_frame.grid_rowconfigure(4, weight=1)
+
+        result_tree = ttk.Treeview(
+            result_table_wrap,
+            columns=("word", "input", "count"),
+            show="headings",
+            style="WordList.Treeview",
+            height=12,
         )
+        result_tree.heading("word", text=self.tr("word"))
+        result_tree.heading("input", text=self.tr("your_answer"))
+        result_tree.heading("count", text=self.tr("wrong_times"))
+        result_tree.column("word", width=390, minwidth=240, anchor="w", stretch=True)
+        result_tree.column("input", width=220, minwidth=150, anchor="w", stretch=True)
+        result_tree.column("count", width=110, minwidth=90, anchor="center", stretch=False)
+        result_tree.tag_configure("correct", foreground="#15803d")
+        result_tree.tag_configure("wrong", foreground="#dc2626")
+        result_tree.grid(row=0, column=0, sticky="nsew")
+        result_scroll = ttk.Scrollbar(result_table_wrap, orient="vertical", command=result_tree.yview)
+        result_scroll.grid(row=0, column=1, sticky="ns")
+        result_tree.configure(yscrollcommand=result_scroll.set)
+        self.dictation_result_review_tree = result_tree
 
     def _has_unsaved_manual_words(self):
         return bool(self.manual_source_dirty and self.store.words and not self.store.has_current_source_file())
@@ -2398,7 +2457,7 @@ class MainView(ttk.Frame):
         self.store.save_last_dictation_accuracy(accuracy)
         self.dictation_summary_var.set(f"{accuracy:.2f}%")
         self.dictation_status_var.set(self.tr("dictation_session_complete"))
-        self._refresh_dictation_answer_review_popup()
+        self._render_dictation_answer_review_views()
         self.refresh_dictation_recent_list()
         self._show_dictation_frame(self.dictation_result_frame)
 
@@ -2420,6 +2479,13 @@ class MainView(ttk.Frame):
         if self.dictation_input:
             self.dictation_input.delete(0, tk.END)
         self._set_dictation_input_color("neutral")
+        if self.dictation_result_accuracy_var is not None:
+            self.dictation_result_accuracy_var.set("0.00%")
+        if self.dictation_result_last_var is not None:
+            self.dictation_result_last_var.set("-")
+        if self.dictation_result_filter_var is not None:
+            self.dictation_result_filter_var.set(self.tr("show_wrong_only"))
+        self._render_dictation_answer_review_tree(self.dictation_result_review_tree)
         self.close_dictation_answer_review_popup()
         self._show_dictation_frame(self.dictation_setup_frame)
         self.refresh_dictation_recent_list()
@@ -2464,36 +2530,10 @@ class MainView(ttk.Frame):
         self.dictation_answer_review_popup = None
         self.dictation_answer_review_tree = None
 
-    def _refresh_dictation_answer_review_popup(self):
-        if not self.dictation_answer_review_popup or not self.dictation_answer_review_popup.winfo_exists():
-            return
-        self._render_dictation_answer_review_popup()
-
-    def _toggle_dictation_answer_review_filter(self):
-        self.dictation_answer_review_show_wrong_only = not self.dictation_answer_review_show_wrong_only
-        self._render_dictation_answer_review_popup()
-
-    def _return_from_dictation_answer_review(self):
-        self.close_dictation_answer_review_popup()
-        self.reset_dictation_view()
-
-    def _render_dictation_answer_review_popup(self):
-        if not self.dictation_answer_review_popup or not self.dictation_answer_review_popup.winfo_exists():
-            return
-        popup = self.dictation_answer_review_popup
-        accuracy = self._dictation_accuracy_so_far()
-        previous_accuracy = self.dictation_previous_session_accuracy
-        self.dictation_answer_review_accuracy_var.set(f"{accuracy:.2f}%")
-        if previous_accuracy is None:
-            self.dictation_answer_review_last_var.set("-")
-        else:
-            self.dictation_answer_review_last_var.set(f"{float(previous_accuracy):.2f}%")
-        filter_text = self.tr("show_all_answers") if self.dictation_answer_review_show_wrong_only else self.tr("show_wrong_only")
-        self.dictation_answer_review_filter_var.set(filter_text)
-        rows = self._dictation_review_rows()
-        tree = self.dictation_answer_review_tree
+    def _render_dictation_answer_review_tree(self, tree):
         if not tree:
             return
+        rows = self._dictation_review_rows()
         tree.delete(*tree.get_children())
         if not rows:
             tree.insert("", tk.END, iid="empty", values=("", self.tr("no_answers_yet"), ""))
@@ -2511,11 +2551,50 @@ class MainView(ttk.Frame):
                 ),
                 tags=(tag_name,),
             )
-        popup.update_idletasks()
+
+    def _render_dictation_answer_review_views(self):
+        accuracy = self._dictation_accuracy_so_far()
+        previous_accuracy = self.dictation_previous_session_accuracy
+        filter_text = self.tr("show_all_answers") if self.dictation_answer_review_show_wrong_only else self.tr("show_wrong_only")
+
+        if self.dictation_answer_review_accuracy_var is not None:
+            self.dictation_answer_review_accuracy_var.set(f"{accuracy:.2f}%")
+        if self.dictation_result_accuracy_var is not None:
+            self.dictation_result_accuracy_var.set(f"{accuracy:.2f}%")
+
+        last_text = "-" if previous_accuracy is None else f"{float(previous_accuracy):.2f}%"
+        if self.dictation_answer_review_last_var is not None:
+            self.dictation_answer_review_last_var.set(last_text)
+        if self.dictation_result_last_var is not None:
+            self.dictation_result_last_var.set(last_text)
+
+        if self.dictation_answer_review_filter_var is not None:
+            self.dictation_answer_review_filter_var.set(filter_text)
+        if self.dictation_result_filter_var is not None:
+            self.dictation_result_filter_var.set(filter_text)
+
+        self._render_dictation_answer_review_tree(self.dictation_answer_review_tree)
+        self._render_dictation_answer_review_tree(self.dictation_result_review_tree)
+
+        if self.dictation_answer_review_popup and self.dictation_answer_review_popup.winfo_exists():
+            self.dictation_answer_review_popup.update_idletasks()
+        if self.dictation_result_frame and self.dictation_result_frame.winfo_exists():
+            self.dictation_result_frame.update_idletasks()
+
+    def _refresh_dictation_answer_review_popup(self):
+        self._render_dictation_answer_review_views()
+
+    def _toggle_dictation_answer_review_filter(self):
+        self.dictation_answer_review_show_wrong_only = not self.dictation_answer_review_show_wrong_only
+        self._render_dictation_answer_review_views()
+
+    def _return_from_dictation_answer_review(self):
+        self.close_dictation_answer_review_popup()
+        self.reset_dictation_view()
 
     def open_dictation_answer_review_popup(self):
         if self.dictation_answer_review_popup and self.dictation_answer_review_popup.winfo_exists():
-            self._render_dictation_answer_review_popup()
+            self._render_dictation_answer_review_views()
             self.dictation_answer_review_popup.deiconify()
             self.dictation_answer_review_popup.lift()
             return
@@ -2600,7 +2679,7 @@ class MainView(ttk.Frame):
         scroll.grid(row=0, column=1, sticky="ns")
         tree.configure(yscrollcommand=scroll.set)
         self.dictation_answer_review_tree = tree
-        self._render_dictation_answer_review_popup()
+        self._render_dictation_answer_review_views()
 
     def show_dictation_wrong_words(self):
         if not self.dictation_wrong_items:
