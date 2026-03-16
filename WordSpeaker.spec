@@ -48,6 +48,9 @@ for package_name in (
 hiddenimports += [
     "docx",
     "fitz",
+    "pkg_resources._vendor.appdirs",
+    "pkg_resources._vendor.packaging",
+    "pkg_resources._vendor.pyparsing",
 ]
 
 a = Analysis(
