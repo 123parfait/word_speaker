@@ -173,6 +173,25 @@
 - Protected local files include audio cache, config, translation cache, POS cache, user dictionary, corpus index, and dictation/history data
 - GitHub Releases can be used as the host for the update `.zip`; the app only needs a reachable `manifest.json`
 - Users need one first packaged build that already contains the updater; later versions can then be installed from inside the app
+- Recommended release workflow:
+  1. update `version.json`
+  2. rebuild the packaged app folder, for example `dist/WordSpeaker/`
+  3. create a full package zip, for example `WordSpeaker-x.x.x-portable.zip`, from the whole packaged folder
+  4. use `Tools > Update App > Build Update Package` to create `WordSpeaker-update-x.x.x.zip`
+  5. generate `manifest.json` for the update package
+  6. upload all 3 files to the same GitHub Release:
+     - `WordSpeaker-x.x.x-portable.zip`
+     - `WordSpeaker-update-x.x.x.zip`
+     - `manifest.json`
+- Packaging defaults:
+  - the packaged app includes built-in models, WordNet data, and `version.json`
+  - the packaged app does not include your local `audio_cache`, translation cache, POS cache, user dictionary, or dictation history by default
+- Release hygiene:
+  - do not use a packaged folder that you have already been using for daily study as the source for a public release
+  - if you run the packaged app before zipping it, that folder may accumulate local runtime files under `data/`
+  - for clean releases, rebuild first and zip the fresh packaged folder before using it as a real app
+  - share reusable word audio with `Export Shared Cache` instead of bundling runtime cache folders into the release package
+  - share curated vocabulary content with `.wspack` resource packs instead of shipping the whole `data/` folder
 - Do not run the packaged app directly from inside a zip file
 - Fully extract the packaged folder first, ideally with `7-Zip`, `Bandizip`, or `WinRAR`
 - Extract to a short path such as `D:\WS` or `C:\WordSpeaker`

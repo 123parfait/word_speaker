@@ -56,19 +56,35 @@ def _version_file_path(base_dir=None):
     return root / VERSION_FILE_NAME
 
 
-def load_version_info(base_dir=None):
-    version_path = _version_file_path(base_dir)
-    if version_path.exists():
+def _version_file_candidates(base_dir=None):
+    root = Path(base_dir or app_install_dir())
+    return [
+        root / VERSION_FILE_NAME,
+        root / "_internal" / VERSION_FILE_NAME,
+    ]
+
+
+def _read_version_payload(base_dir=None):
+    for version_path in _version_file_candidates(base_dir):
+        if not version_path.exists():
+            continue
         try:
             data = json.loads(version_path.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                return {
-                    "version": str(data.get("version") or "0.0.0").strip() or "0.0.0",
-                    "entry_exe": str(data.get("entry_exe") or DEFAULT_ENTRY_EXE).strip() or DEFAULT_ENTRY_EXE,
-                    "channel_url": str(data.get("channel_url") or "").strip(),
-                }
         except Exception:
-            pass
+            continue
+        if isinstance(data, dict):
+            return data, version_path
+    return None, None
+
+
+def load_version_info(base_dir=None):
+    data, _version_path = _read_version_payload(base_dir)
+    if isinstance(data, dict):
+        return {
+            "version": str(data.get("version") or "0.0.0").strip() or "0.0.0",
+            "entry_exe": str(data.get("entry_exe") or DEFAULT_ENTRY_EXE).strip() or DEFAULT_ENTRY_EXE,
+            "channel_url": str(data.get("channel_url") or "").strip(),
+        }
     return {
         "version": "0.0.0",
         "entry_exe": DEFAULT_ENTRY_EXE,
@@ -160,8 +176,8 @@ def build_update_package(source_dir, output_zip_path):
     if not source_root.exists() or not source_root.is_dir():
         raise FileNotFoundError("Update source directory not found.")
     version_info = load_version_info(source_root)
-    version_file = source_root / VERSION_FILE_NAME
-    if not version_file.exists():
+    version_payload, version_file = _read_version_payload(source_root)
+    if version_file is None or not isinstance(version_payload, dict):
         raise RuntimeError("The selected folder does not contain version.json.")
 
     target_zip = Path(os.path.abspath(str(output_zip_path or "").strip()))
@@ -174,6 +190,7 @@ def build_update_package(source_dir, output_zip_path):
     file_count = 0
     total_bytes = 0
     with zipfile.ZipFile(target_zip, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        wrote_root_version = False
         for path in sorted(source_root.rglob("*")):
             if not path.is_file():
                 continue
@@ -182,11 +199,19 @@ def build_update_package(source_dir, output_zip_path):
                 continue
             archive_name = _normalize_zip_path(Path(root_name) / relative)
             zf.write(path, archive_name)
+            if archive_name == _normalize_zip_path(Path(root_name) / VERSION_FILE_NAME):
+                wrote_root_version = True
             file_count += 1
             try:
                 total_bytes += int(path.stat().st_size)
             except Exception:
                 pass
+        if not wrote_root_version:
+            archive_name = _normalize_zip_path(Path(root_name) / VERSION_FILE_NAME)
+            serialized = json.dumps(version_payload, ensure_ascii=False, indent=2)
+            zf.writestr(archive_name, serialized)
+            file_count += 1
+            total_bytes += len(serialized.encode("utf-8"))
     return {
         "source_dir": str(source_root),
         "output_path": str(target_zip),
