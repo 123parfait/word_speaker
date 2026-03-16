@@ -1,4 +1,6 @@
 ﻿# -*- coding: utf-8 -*-
+import ctypes
+import html
 import os
 import queue
 import random
@@ -6,6 +8,7 @@ import re
 import time
 import unicodedata
 import tkinter as tk
+from html.parser import HTMLParser
 from tkinter import ttk, filedialog, messagebox
 
 from data.store import WordStore
@@ -30,9 +33,12 @@ from services.tts import (
     get_online_tts_queue_status as tts_get_online_tts_queue_status,
     get_runtime_label as tts_get_runtime_label,
     has_cached_word_audio as tts_has_cached_word_audio,
+    export_shared_audio_cache_package as tts_export_shared_audio_cache_package,
+    import_shared_audio_cache_package as tts_import_shared_audio_cache_package,
 )
 from services.translation import (
     get_cached_translations,
+    prepare_async as translation_prepare_async,
     set_cached_translation,
     translate_words as translate_words_en_zh,
 )
@@ -40,6 +46,10 @@ from services.word_analysis import (
     analyze_words,
     get_cached_pos,
     set_cached_pos,
+)
+from services.resource_pack import (
+    export_word_resource_pack,
+    import_word_resource_pack,
 )
 from services.synonyms import get_synonyms as get_synonyms_for_word
 from services.ielts_passage import build_ielts_listening_passage
@@ -50,12 +60,14 @@ from services.app_config import (
     get_tts_api_key,
     get_tts_api_provider,
     get_ui_language,
+    get_update_manifest_url,
     set_llm_api_key,
     set_llm_api_provider,
     set_generation_model,
     set_tts_api_key,
     set_tts_api_provider,
     set_ui_language,
+    set_update_manifest_url,
 )
 from services.gemini_writer import (
     DEFAULT_GEMINI_MODEL,
@@ -83,6 +95,75 @@ from services.corpus_search import (
     search_corpus,
 )
 from services.diff_view import apply_diff
+from services.update_manager import (
+    build_online_manifest,
+    build_update_package,
+    download_update_package,
+    fetch_online_manifest,
+    inspect_update_package,
+    is_newer_version,
+    is_packaged_runtime,
+    launch_staged_update,
+    load_local_version_info,
+    load_version_info,
+    stage_update_package,
+)
+
+
+class _ClipboardTableHTMLParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.rows = []
+        self._current_row = None
+        self._current_cell = None
+        self._table_depth = 0
+
+    def handle_starttag(self, tag, attrs):
+        tag_name = str(tag or "").strip().lower()
+        if tag_name == "table":
+            self._table_depth += 1
+        if self._table_depth <= 0:
+            return
+        if tag_name == "tr":
+            self._current_row = []
+        elif tag_name in {"td", "th"}:
+            self._current_cell = []
+        elif tag_name == "br":
+            if self._current_cell is not None:
+                self._current_cell.append("\n")
+        elif tag_name in {"p", "div", "li"}:
+            if self._current_cell is not None and self._current_cell:
+                self._current_cell.append("\n")
+
+    def handle_endtag(self, tag):
+        tag_name = str(tag or "").strip().lower()
+        if self._table_depth <= 0 and tag_name != "table":
+            return
+        if tag_name in {"td", "th"} and self._current_row is not None and self._current_cell is not None:
+            self._current_row.append(self._normalize_cell("".join(self._current_cell)))
+            self._current_cell = None
+        elif tag_name == "tr" and self._current_row is not None:
+            if any(cell for cell in self._current_row):
+                self.rows.append(list(self._current_row))
+            self._current_row = None
+        elif tag_name == "table" and self._table_depth > 0:
+            self._table_depth -= 1
+
+    def handle_data(self, data):
+        if self._current_cell is None:
+            return
+        value = html.unescape(str(data or ""))
+        if value:
+            self._current_cell.append(value)
+
+    @staticmethod
+    def _normalize_cell(text):
+        lines = []
+        for raw_line in str(text or "").replace("\r", "\n").split("\n"):
+            line = re.sub(r"[ \t]+", " ", raw_line).strip()
+            if line:
+                lines.append(line)
+        return "\n".join(lines).strip()
 
 
 UI_TEXTS = {
@@ -138,6 +219,56 @@ UI_TEXTS = {
         "find_corpus_sentences": "语料句子检索",
         "generate_ielts_passage": "生成 IELTS 篇章",
         "voice_model_settings": "音源 / 模型设置",
+        "shared_cache_tools": "共享音频缓存",
+        "shared_cache_tip": "把已生成的单词音频打包分享，或导入别人准备好的缓存包以节省 TTS 额度。",
+        "export_shared_cache": "导出共享缓存",
+        "import_shared_cache": "导入共享缓存",
+        "resource_pack_tools": "词表资源包",
+        "resource_pack_tip": "导出当前词表、备注和人工校对过的词性 / 中文；导入时只会写入这些词条，不会碰整个 data 目录。",
+        "export_resource_pack": "导出词表资源包",
+        "import_resource_pack": "导入词表资源包",
+        "resource_pack_type": "Word Speaker 词表资源包",
+        "resource_pack_export_title": "导出词表资源包",
+        "resource_pack_import_title": "导入词表资源包",
+        "resource_pack_export_empty": "当前没有可导出的词表内容。",
+        "resource_pack_export_done": "已导出 {count} 个词条到：\n{path}",
+        "resource_pack_import_done": "已导入 {count} 个词条。\n备注 {notes} 条，中文 {translations} 条，词性 {pos} 条。",
+        "resource_pack_export_failed": "导出词表资源包失败：{error}",
+        "resource_pack_import_failed": "导入词表资源包失败：{error}",
+        "shared_cache_package_type": "Word Speaker 缓存包",
+        "shared_cache_export_title": "导出共享音频缓存",
+        "shared_cache_import_title": "导入共享音频缓存",
+        "shared_cache_export_empty": "当前还没有可导出的共享单词音频缓存。",
+        "shared_cache_export_done": "已导出 {count} 个缓存音频到：\n{path}",
+        "shared_cache_import_done": "导入完成。\n新增 {imported} 个，替换 {replaced} 个，跳过相同 {same} 个，跳过较旧 {older} 个。",
+        "shared_cache_import_errors": "导入过程中有 {count} 个问题：\n{detail}",
+        "shared_cache_import_failed": "导入缓存包失败：{error}",
+        "shared_cache_export_failed": "导出缓存包失败：{error}",
+        "update_app": "更新程序",
+        "update_title": "程序更新",
+        "update_desc": "可以联网检查新版本，也可以直接导入本地更新包。更新时会尽量保留本机缓存和配置。",
+        "update_current_version": "当前版本：{version}",
+        "update_online": "在线更新",
+        "update_offline": "导入更新包",
+        "build_update_package": "生成更新包",
+        "update_package_type": "Word Speaker 更新包",
+        "update_online_url_prompt": "输入在线更新清单地址（manifest.json）：",
+        "update_online_missing_url": "没有填写在线更新地址。",
+        "update_source_dir": "选择已打包的程序目录",
+        "update_build_done": "已生成更新包：\n{path}\n\n版本：{version}\n文件数：{count}",
+        "update_manifest_done": "已生成在线更新清单：\n{path}",
+        "update_manifest_url_prompt": "输入这个更新包的在线下载地址：",
+        "update_manifest_notes_prompt": "可选：输入这次更新说明：",
+        "update_manifest_create": "是否顺手生成一个在线 manifest.json？",
+        "update_not_packaged": "当前是源码运行环境。自更新仅在打包后的程序里可用。",
+        "update_checking": "正在检查更新……",
+        "update_downloading": "正在下载更新包……",
+        "update_no_update": "当前已经是最新版本。",
+        "update_online_available": "发现新版本 {version}。\n\n是否下载并安装？",
+        "update_offline_confirm": "准备安装更新包版本 {version}。\n\n是否现在更新？",
+        "update_reinstall_confirm": "更新包版本是 {version}，与当前版本相同或更旧。\n\n仍然要继续安装吗？",
+        "update_started": "更新程序已经启动。当前窗口会关闭，并在更新完成后自动打开新版本。",
+        "update_failed": "启动更新失败：{error}",
         "tools_tip": "提示：先选中单词，再生成例句或做定向语料检索。",
         "settings_title": "设置",
         "ui_language": "界面语言",
@@ -386,6 +517,56 @@ UI_TEXTS = {
         "find_corpus_sentences": "Find Corpus Sentences",
         "generate_ielts_passage": "Generate IELTS Passage",
         "voice_model_settings": "Voice / Model Settings",
+        "shared_cache_tools": "Shared Audio Cache",
+        "shared_cache_tip": "Export reusable word-audio cache packs for sharing, or import one to save TTS quota.",
+        "export_shared_cache": "Export Shared Cache",
+        "import_shared_cache": "Import Shared Cache",
+        "resource_pack_tools": "Word Resource Packs",
+        "resource_pack_tip": "Export the current list, notes, and manually corrected POS / translations. Import only touches those entries and never ships the whole data folder.",
+        "export_resource_pack": "Export Resource Pack",
+        "import_resource_pack": "Import Resource Pack",
+        "resource_pack_type": "Word Speaker Resource Pack",
+        "resource_pack_export_title": "Export Word Resource Pack",
+        "resource_pack_import_title": "Import Word Resource Pack",
+        "resource_pack_export_empty": "There is no word list content to export right now.",
+        "resource_pack_export_done": "Exported {count} entries to:\n{path}",
+        "resource_pack_import_done": "Imported {count} entries.\nNotes: {notes}, translations: {translations}, POS: {pos}.",
+        "resource_pack_export_failed": "Failed to export the word resource pack: {error}",
+        "resource_pack_import_failed": "Failed to import the word resource pack: {error}",
+        "shared_cache_package_type": "Word Speaker Cache Pack",
+        "shared_cache_export_title": "Export Shared Audio Cache",
+        "shared_cache_import_title": "Import Shared Audio Cache",
+        "shared_cache_export_empty": "There is no shared word-audio cache to export yet.",
+        "shared_cache_export_done": "Exported {count} cached audio items to:\n{path}",
+        "shared_cache_import_done": "Import complete.\nAdded {imported}, replaced {replaced}, skipped same {same}, skipped older {older}.",
+        "shared_cache_import_errors": "The import reported {count} issues:\n{detail}",
+        "shared_cache_import_failed": "Failed to import the cache package: {error}",
+        "shared_cache_export_failed": "Failed to export the cache package: {error}",
+        "update_app": "Update App",
+        "update_title": "App Update",
+        "update_desc": "Check for a newer version online or import a local update package. The updater will try to preserve local cache and settings.",
+        "update_current_version": "Current version: {version}",
+        "update_online": "Online Update",
+        "update_offline": "Import Update Package",
+        "build_update_package": "Build Update Package",
+        "update_package_type": "Word Speaker Update Package",
+        "update_online_url_prompt": "Enter the online update manifest URL (manifest.json):",
+        "update_online_missing_url": "No online update URL was provided.",
+        "update_source_dir": "Choose the packaged app folder",
+        "update_build_done": "Built update package:\n{path}\n\nVersion: {version}\nFiles: {count}",
+        "update_manifest_done": "Built online update manifest:\n{path}",
+        "update_manifest_url_prompt": "Enter the online download URL for this update package:",
+        "update_manifest_notes_prompt": "Optional: enter release notes for this update:",
+        "update_manifest_create": "Also generate an online manifest.json now?",
+        "update_not_packaged": "This is a source-code runtime. Self-update is only available in the packaged app.",
+        "update_checking": "Checking for updates...",
+        "update_downloading": "Downloading the update package...",
+        "update_no_update": "This version is already up to date.",
+        "update_online_available": "Version {version} is available.\n\nDownload and install it now?",
+        "update_offline_confirm": "Ready to install update package version {version}.\n\nUpdate now?",
+        "update_reinstall_confirm": "The package version is {version}, which is the same or older than the current version.\n\nInstall it anyway?",
+        "update_started": "The updater has started. This window will close and the new version will launch when the update finishes.",
+        "update_failed": "Failed to start the update: {error}",
         "tools_tip": "Tip: select a word first for sentence generation and targeted corpus search.",
         "settings_title": "Settings",
         "ui_language": "UI Language",
@@ -696,6 +877,8 @@ class MainView(ttk.Frame):
         self.synonym_event_queue = queue.Queue()
         self.translations = {}
         self.word_pos = {}
+        self.pending_translation_words = set()
+        self.pending_analysis_words = set()
         self.translation_token = 0
         self.analysis_token = 0
         self.manual_source_dirty = False
@@ -823,6 +1006,11 @@ class MainView(ttk.Frame):
         self.tools_passage_btn = None
         self.tools_find_btn = None
         self.tools_settings_btn = None
+        self.tools_update_btn = None
+        self.tools_export_cache_btn = None
+        self.tools_import_cache_btn = None
+        self.tools_export_resource_pack_btn = None
+        self.tools_import_resource_pack_btn = None
         self.save_as_btn = None
         self.new_list_btn = None
         self.detail_edit_btn = None
@@ -845,6 +1033,7 @@ class MainView(ttk.Frame):
         self.update_play_button()
         self.update_right_visibility()
         tts_prepare_async()
+        translation_prepare_async()
         self.refresh_gemini_models()
         self.after(150, self.ensure_api_credentials)
 
@@ -1202,6 +1391,58 @@ class MainView(ttk.Frame):
             command=self.toggle_settings,
         )
         self.tools_settings_btn.grid(row=3, column=1, padx=(6, 0), pady=4, sticky="ew")
+        self.tools_update_btn = ttk.Button(
+            tools_wrap,
+            text=self.tr("update_app"),
+            command=self.open_update_dialog,
+        )
+        self.tools_update_btn.grid(row=4, column=0, columnspan=2, pady=(8, 4), sticky="ew")
+        ttk.Label(tools_wrap, text=self.tr("shared_cache_tools"), style="Card.TLabel").grid(
+            row=5, column=0, columnspan=2, sticky="w", pady=(12, 0)
+        )
+        ttk.Label(
+            tools_wrap,
+            text=self.tr("shared_cache_tip"),
+            style="Card.TLabel",
+            foreground="#667085",
+            wraplength=420,
+            justify="left",
+        ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(4, 10))
+        self.tools_export_cache_btn = ttk.Button(
+            tools_wrap,
+            text=self.tr("export_shared_cache"),
+            command=self.export_shared_cache_package,
+        )
+        self.tools_export_cache_btn.grid(row=7, column=0, padx=(0, 6), pady=4, sticky="ew")
+        self.tools_import_cache_btn = ttk.Button(
+            tools_wrap,
+            text=self.tr("import_shared_cache"),
+            command=self.import_shared_cache_package,
+        )
+        self.tools_import_cache_btn.grid(row=7, column=1, padx=(6, 0), pady=4, sticky="ew")
+        ttk.Label(tools_wrap, text=self.tr("resource_pack_tools"), style="Card.TLabel").grid(
+            row=8, column=0, columnspan=2, sticky="w", pady=(12, 0)
+        )
+        ttk.Label(
+            tools_wrap,
+            text=self.tr("resource_pack_tip"),
+            style="Card.TLabel",
+            foreground="#667085",
+            wraplength=420,
+            justify="left",
+        ).grid(row=9, column=0, columnspan=2, sticky="w", pady=(4, 10))
+        self.tools_export_resource_pack_btn = ttk.Button(
+            tools_wrap,
+            text=self.tr("export_resource_pack"),
+            command=self.export_word_resource_pack_tool,
+        )
+        self.tools_export_resource_pack_btn.grid(row=10, column=0, padx=(0, 6), pady=4, sticky="ew")
+        self.tools_import_resource_pack_btn = ttk.Button(
+            tools_wrap,
+            text=self.tr("import_resource_pack"),
+            command=self.import_word_resource_pack_tool,
+        )
+        self.tools_import_resource_pack_btn.grid(row=10, column=1, padx=(6, 0), pady=4, sticky="ew")
 
         ttk.Label(
             tools_wrap,
@@ -1210,7 +1451,7 @@ class MainView(ttk.Frame):
             foreground="#4b5563",
             wraplength=420,
             justify="left",
-        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        ).grid(row=11, column=0, columnspan=2, sticky="w", pady=(10, 0))
 
         self._refresh_selection_details()
 
@@ -1777,18 +2018,22 @@ class MainView(ttk.Frame):
         return (f"{idx + 1}.", f"{word}\n{subtitle}", note_value)
 
     def _start_analysis_job(self, words, token):
-        if not words:
+        requested_words = [str(word or "").strip() for word in (words or []) if str(word or "").strip()]
+        if not requested_words:
             return
+        self.pending_analysis_words.update(requested_words)
 
         def _run():
-            analyzed = analyze_words(words)
-            self.after(0, lambda: self._apply_pos_analysis(token, analyzed))
+            analyzed = analyze_words(requested_words)
+            self.after(0, lambda: self._apply_pos_analysis(token, requested_words, analyzed))
 
         import threading
 
         threading.Thread(target=_run, daemon=True).start()
 
-    def _apply_pos_analysis(self, token, analyzed):
+    def _apply_pos_analysis(self, token, requested_words, analyzed):
+        for word in requested_words or []:
+            self.pending_analysis_words.discard(word)
         if token != self.analysis_token or not self.word_table:
             return
         self.word_pos.update(analyzed)
@@ -2730,6 +2975,450 @@ class MainView(ttk.Frame):
             lines.append(self.trf("audio_cache_meta_path", path=meta_path))
         messagebox.showinfo(self.tr("audio_cache_info_title"), "\n".join(lines))
 
+    def _format_size_label(self, size_bytes):
+        try:
+            value = float(size_bytes or 0)
+        except Exception:
+            value = 0.0
+        units = ["B", "KB", "MB", "GB"]
+        unit = units[0]
+        for unit in units:
+            if value < 1024 or unit == units[-1]:
+                break
+            value /= 1024.0
+        if unit == "B":
+            return f"{int(value)} {unit}"
+        return f"{value:.1f} {unit}"
+
+    def _collect_word_resource_entries(self):
+        entries = []
+        cached_translations = get_cached_translations(self.store.words)
+        cached_pos = get_cached_pos(self.store.words)
+        for idx, word in enumerate(self.store.words):
+            token = str(word or "").strip()
+            if not token:
+                continue
+            note = str(self.store.notes[idx] if idx < len(self.store.notes) else "").strip()
+            translation = str(self.translations.get(token) or cached_translations.get(token) or "").strip()
+            pos_label = str(self.word_pos.get(token) or cached_pos.get(token) or "").strip()
+            entries.append(
+                {
+                    "word": token,
+                    "note": note,
+                    "translation": translation,
+                    "pos": pos_label,
+                }
+            )
+        return entries
+
+    def _load_word_resource_pack_entries(self, entries):
+        rows = []
+        translation_count = 0
+        pos_count = 0
+        for item in entries or []:
+            if not isinstance(item, dict):
+                continue
+            word = str(item.get("word") or "").strip()
+            if not word:
+                continue
+            note = str(item.get("note") or "").strip()
+            translation = str(item.get("translation") or "").strip()
+            pos_label = str(item.get("pos") or "").strip()
+            rows.append({"word": word, "note": note})
+            if translation:
+                set_cached_translation(word, translation)
+                translation_count += 1
+            if pos_label:
+                set_cached_pos(word, pos_label)
+                pos_count += 1
+        if not rows:
+            return None
+        self.cancel_word_edit()
+        words = [str(row.get("word") or "").strip() for row in rows]
+        notes = [str(row.get("note") or "").strip() for row in rows]
+        self.store.set_words(words, notes, preserve_source=False)
+        self.manual_source_dirty = False
+        self.render_words(words)
+        self.reset_playback_state()
+        return {
+            "count": len(rows),
+            "note_count": sum(1 for row in rows if str(row.get("note") or "").strip()),
+            "translation_count": translation_count,
+            "pos_count": pos_count,
+        }
+
+    def export_word_resource_pack_tool(self):
+        if not self.store.words:
+            messagebox.showinfo(
+                self.tr("resource_pack_export_title"),
+                self.tr("resource_pack_export_empty"),
+            )
+            return
+        path = filedialog.asksaveasfilename(
+            title=self.tr("resource_pack_export_title"),
+            defaultextension=".wspack",
+            filetypes=[(self.tr("resource_pack_type"), "*.wspack")],
+            initialfile="wordspeaker_word_resource_pack.wspack",
+        )
+        if not path:
+            return
+        metadata = {}
+        current_source = str(self.store.get_current_source_path() or "").strip()
+        if current_source:
+            metadata["source_name"] = os.path.basename(current_source)
+        try:
+            result = export_word_resource_pack(path, self._collect_word_resource_entries(), metadata=metadata)
+        except Exception as exc:
+            messagebox.showerror(
+                self.tr("resource_pack_export_title"),
+                self.trf("resource_pack_export_failed", error=str(exc)),
+            )
+            return
+        self.status_var.set(f"Word resource pack exported: {int(result.get('entry_count') or 0)} entries.")
+        messagebox.showinfo(
+            self.tr("resource_pack_export_title"),
+            self.trf("resource_pack_export_done", count=int(result.get("entry_count") or 0), path=path),
+        )
+
+    def import_word_resource_pack_tool(self, package_path=None):
+        if package_path is None:
+            path = filedialog.askopenfilename(
+                title=self.tr("resource_pack_import_title"),
+                filetypes=[(self.tr("resource_pack_type"), "*.wspack")],
+            )
+        else:
+            path = package_path
+        if not path:
+            return False
+        if not self._prompt_save_unsaved_manual_words(title=self.tr("resource_pack_import_title")):
+            return False
+        try:
+            result = import_word_resource_pack(path)
+        except Exception as exc:
+            messagebox.showerror(
+                self.tr("resource_pack_import_title"),
+                self.trf("resource_pack_import_failed", error=str(exc)),
+            )
+            return False
+        load_result = self._load_word_resource_pack_entries(result.get("entries") or [])
+        if not load_result:
+            messagebox.showinfo(
+                self.tr("resource_pack_import_title"),
+                self.tr("no_valid_words"),
+            )
+            return False
+        self.status_var.set(f"Word resource pack imported: {int(load_result.get('count') or 0)} entries.")
+        messagebox.showinfo(
+            self.tr("resource_pack_import_title"),
+            self.trf(
+                "resource_pack_import_done",
+                count=int(load_result.get("count") or 0),
+                notes=int(load_result.get("note_count") or 0),
+                translations=int(load_result.get("translation_count") or 0),
+                pos=int(load_result.get("pos_count") or 0),
+            ),
+        )
+        return True
+
+    def export_shared_cache_package(self):
+        path = filedialog.asksaveasfilename(
+            title=self.tr("shared_cache_export_title"),
+            defaultextension=".zip",
+            filetypes=[(self.tr("shared_cache_package_type"), "*.zip")],
+            initialfile="wordspeaker_shared_audio_cache.zip",
+        )
+        if not path:
+            return
+        try:
+            result = tts_export_shared_audio_cache_package(path)
+        except Exception as exc:
+            messagebox.showerror(
+                self.tr("shared_cache_export_title"),
+                self.trf("shared_cache_export_failed", error=str(exc)),
+            )
+            return
+        if not result.get("ok"):
+            messagebox.showinfo(
+                self.tr("shared_cache_export_title"),
+                self.tr("shared_cache_export_empty"),
+            )
+            return
+        count = int(result.get("entries") or 0)
+        size_label = self._format_size_label(result.get("bytes") or 0)
+        self.status_var.set(f"Shared audio cache exported: {count} items, {size_label}.")
+        messagebox.showinfo(
+            self.tr("shared_cache_export_title"),
+            self.trf("shared_cache_export_done", count=count, path=path),
+        )
+
+    def import_shared_cache_package(self):
+        path = filedialog.askopenfilename(
+            title=self.tr("shared_cache_import_title"),
+            filetypes=[(self.tr("shared_cache_package_type"), "*.zip")],
+        )
+        if not path:
+            return
+        try:
+            result = tts_import_shared_audio_cache_package(path)
+        except Exception as exc:
+            messagebox.showerror(
+                self.tr("shared_cache_import_title"),
+                self.trf("shared_cache_import_failed", error=str(exc)),
+            )
+            return
+        imported = int(result.get("imported") or 0)
+        replaced = int(result.get("replaced") or 0)
+        skipped_same = int(result.get("skipped_same") or 0)
+        skipped_older = int(result.get("skipped_older") or 0)
+        self.status_var.set(
+            f"Shared audio cache imported: +{imported}, replaced {replaced}, skipped {skipped_same + skipped_older}."
+        )
+        messagebox.showinfo(
+            self.tr("shared_cache_import_title"),
+            self.trf(
+                "shared_cache_import_done",
+                imported=imported,
+                replaced=replaced,
+                same=skipped_same,
+                older=skipped_older,
+            ),
+        )
+        errors = list(result.get("errors") or [])
+        if errors:
+            detail = "\n".join(errors[:6])
+            if len(errors) > 6:
+                detail = f"{detail}\n..."
+            messagebox.showwarning(
+                self.tr("shared_cache_import_title"),
+                self.trf("shared_cache_import_errors", count=len(errors), detail=detail),
+            )
+
+    def _launch_staged_update(self, staged_info):
+        if not staged_info:
+            return
+        if not is_packaged_runtime():
+            messagebox.showinfo(self.tr("update_title"), self.tr("update_not_packaged"))
+            return
+        if not self._prompt_save_unsaved_manual_words(title=self.tr("update_title")):
+            return
+        try:
+            launch_staged_update(
+                staged_info.get("source_dir"),
+                entry_exe=staged_info.get("entry_exe"),
+            )
+        except Exception as exc:
+            messagebox.showerror(self.tr("update_title"), self.trf("update_failed", error=str(exc)))
+            return
+        messagebox.showinfo(self.tr("update_title"), self.tr("update_started"))
+        self.after(120, self.on_main_window_close)
+
+    def _install_update_package(self, package_path, *, confirm=True):
+        try:
+            package_info = inspect_update_package(package_path)
+        except Exception as exc:
+            messagebox.showerror(self.tr("update_title"), self.trf("update_failed", error=str(exc)))
+            return
+        current_version = str(load_local_version_info().get("version") or "0.0.0").strip() or "0.0.0"
+        target_version = str(package_info.get("version") or "0.0.0").strip() or "0.0.0"
+        if confirm:
+            if is_newer_version(target_version, current_version):
+                should_install = messagebox.askyesno(
+                    self.tr("update_title"),
+                    self.trf("update_offline_confirm", version=target_version),
+                )
+            else:
+                should_install = messagebox.askyesno(
+                    self.tr("update_title"),
+                    self.trf("update_reinstall_confirm", version=target_version),
+                )
+            if not should_install:
+                return
+        try:
+            staged_info = stage_update_package(package_path)
+        except Exception as exc:
+            messagebox.showerror(self.tr("update_title"), self.trf("update_failed", error=str(exc)))
+            return
+        self._launch_staged_update(staged_info)
+
+    def start_offline_update(self):
+        if not is_packaged_runtime():
+            messagebox.showinfo(self.tr("update_title"), self.tr("update_not_packaged"))
+            return
+        path = filedialog.askopenfilename(
+            title=self.tr("update_title"),
+            filetypes=[(self.tr("update_package_type"), "*.zip")],
+        )
+        if not path:
+            return
+        self._install_update_package(path, confirm=True)
+
+    def start_online_update(self):
+        if not is_packaged_runtime():
+            messagebox.showinfo(self.tr("update_title"), self.tr("update_not_packaged"))
+            return
+        current_info = load_local_version_info()
+        initial_url = get_update_manifest_url() or str(current_info.get("channel_url") or "").strip()
+        manifest_url = self._prompt_text_input(
+            self.tr("update_title"),
+            self.tr("update_online_url_prompt"),
+            initial_value=initial_url,
+        )
+        if manifest_url is None:
+            return
+        manifest_url = str(manifest_url or "").strip()
+        if not manifest_url:
+            messagebox.showinfo(self.tr("update_title"), self.tr("update_online_missing_url"))
+            return
+        set_update_manifest_url(manifest_url)
+        self.status_var.set(self.tr("update_checking"))
+        try:
+            manifest = fetch_online_manifest(manifest_url)
+        except Exception as exc:
+            messagebox.showerror(self.tr("update_title"), self.trf("update_failed", error=str(exc)))
+            return
+        current_version = str(current_info.get("version") or "0.0.0").strip() or "0.0.0"
+        target_version = str(manifest.get("version") or "0.0.0").strip() or "0.0.0"
+        if not is_newer_version(target_version, current_version):
+            self.status_var.set(self.tr("update_no_update"))
+            messagebox.showinfo(self.tr("update_title"), self.tr("update_no_update"))
+            return
+        if not messagebox.askyesno(
+            self.tr("update_title"),
+            self.trf("update_online_available", version=target_version),
+        ):
+            return
+        self.status_var.set(self.tr("update_downloading"))
+        try:
+            package_path = download_update_package(manifest.get("package_url"))
+        except Exception as exc:
+            messagebox.showerror(self.tr("update_title"), self.trf("update_failed", error=str(exc)))
+            return
+        self._install_update_package(package_path, confirm=False)
+
+    def open_update_dialog(self):
+        current_info = load_local_version_info()
+        version_text = str(current_info.get("version") or "0.0.0").strip() or "0.0.0"
+        win = tk.Toplevel(self)
+        win.title(self.tr("update_title"))
+        win.configure(bg="#f6f7fb")
+        win.resizable(False, False)
+
+        wrap = ttk.Frame(win, style="Card.TFrame")
+        wrap.pack(fill="both", expand=True, padx=10, pady=10)
+        ttk.Label(wrap, text=self.tr("update_title"), style="Card.TLabel").pack(anchor="w")
+        ttk.Label(
+            wrap,
+            text=self.trf("update_current_version", version=version_text),
+            style="Card.TLabel",
+            foreground="#4b5563",
+        ).pack(anchor="w", pady=(4, 0))
+        ttk.Label(
+            wrap,
+            text=self.tr("update_desc"),
+            style="Card.TLabel",
+            foreground="#667085",
+            wraplength=420,
+            justify="left",
+        ).pack(anchor="w", pady=(8, 12))
+
+        btn_row = ttk.Frame(wrap, style="Card.TFrame")
+        btn_row.pack(fill="x")
+
+        def _run_online():
+            win.destroy()
+            self.start_online_update()
+
+        def _run_offline():
+            win.destroy()
+            self.start_offline_update()
+
+        def _run_build():
+            win.destroy()
+            self.build_update_package_tool()
+
+        ttk.Button(btn_row, text=self.tr("update_online"), command=_run_online).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(btn_row, text=self.tr("update_offline"), command=_run_offline).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(btn_row, text=self.tr("build_update_package"), command=_run_build).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(btn_row, text=self.tr("close"), command=win.destroy).pack(side=tk.LEFT)
+        win.transient(self)
+        win.grab_set()
+        win.focus_set()
+
+    def build_update_package_tool(self):
+        source_dir = filedialog.askdirectory(title=self.tr("update_source_dir"))
+        if not source_dir:
+            return
+        try:
+            info = load_version_info(source_dir)
+        except Exception as exc:
+            messagebox.showerror(self.tr("update_title"), self.trf("update_failed", error=str(exc)))
+            return
+        version_text = str(info.get("version") or "0.0.0").strip() or "0.0.0"
+        default_name = f"WordSpeaker-update-{version_text}.zip"
+        output_path = filedialog.asksaveasfilename(
+            title=self.tr("build_update_package"),
+            defaultextension=".zip",
+            filetypes=[(self.tr("update_package_type"), "*.zip")],
+            initialfile=default_name,
+        )
+        if not output_path:
+            return
+        try:
+            result = build_update_package(source_dir, output_path)
+        except Exception as exc:
+            messagebox.showerror(self.tr("update_title"), self.trf("update_failed", error=str(exc)))
+            return
+        self.status_var.set(
+            f"Update package built: {result.get('version')} ({int(result.get('files') or 0)} files)."
+        )
+        messagebox.showinfo(
+            self.tr("update_title"),
+            self.trf(
+                "update_build_done",
+                path=result.get("output_path") or output_path,
+                version=result.get("version") or version_text,
+                count=int(result.get("files") or 0),
+            ),
+        )
+        if not messagebox.askyesno(self.tr("update_title"), self.tr("update_manifest_create")):
+            return
+        package_url = self._prompt_text_input(
+            self.tr("update_title"),
+            self.tr("update_manifest_url_prompt"),
+        )
+        if package_url is None:
+            return
+        package_url = str(package_url or "").strip()
+        if not package_url:
+            messagebox.showinfo(self.tr("update_title"), self.tr("update_online_missing_url"))
+            return
+        notes = self._prompt_text_input(
+            self.tr("update_title"),
+            self.tr("update_manifest_notes_prompt"),
+        )
+        manifest_path = filedialog.asksaveasfilename(
+            title=self.tr("update_title"),
+            defaultextension=".json",
+            filetypes=[("JSON", "*.json")],
+            initialfile="manifest.json",
+        )
+        if not manifest_path:
+            return
+        try:
+            manifest_info = build_online_manifest(
+                result.get("version") or version_text,
+                package_url,
+                manifest_path,
+                notes=notes or "",
+            )
+        except Exception as exc:
+            messagebox.showerror(self.tr("update_title"), self.trf("update_failed", error=str(exc)))
+            return
+        messagebox.showinfo(
+            self.tr("update_title"),
+            self.trf("update_manifest_done", path=manifest_info.get("output_path") or manifest_path),
+        )
+
     def edit_selected_word_meta(self):
         selected_idx = self._get_context_or_selected_index()
         if selected_idx is None or selected_idx >= len(self.store.words):
@@ -2799,9 +3488,16 @@ class MainView(ttk.Frame):
     def load_words(self):
         path = filedialog.askopenfilename(
             title="Choose a word list",
-            filetypes=[("Text files", "*.txt"), ("CSV files", "*.csv")],
+            filetypes=[
+                (self.tr("resource_pack_type"), "*.wspack"),
+                ("Text files", "*.txt"),
+                ("CSV files", "*.csv"),
+            ],
         )
         if not path:
+            return
+        if str(path).lower().endswith(".wspack"):
+            self.import_word_resource_pack_tool(package_path=path)
             return
         self.cancel_word_edit()
         words = self.store.load_from_file(path)
@@ -2855,17 +3551,158 @@ class MainView(ttk.Frame):
             rows.append({"word": pending_word, "note": " | ".join(pending_note_lines).strip()})
         return rows
 
+    def _get_windows_clipboard_html(self):
+        if os.name != "nt":
+            return ""
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        fmt = user32.RegisterClipboardFormatW("HTML Format")
+        if not fmt:
+            return ""
+        if not user32.OpenClipboard(None):
+            return ""
+        try:
+            handle = user32.GetClipboardData(fmt)
+            if not handle:
+                return ""
+            locked = kernel32.GlobalLock(handle)
+            if not locked:
+                return ""
+            try:
+                size = int(kernel32.GlobalSize(handle) or 0)
+                if size <= 0:
+                    return ""
+                raw = ctypes.string_at(locked, size).rstrip(b"\x00")
+            finally:
+                kernel32.GlobalUnlock(handle)
+        finally:
+            user32.CloseClipboard()
+        if not raw:
+            return ""
+        for encoding in ("utf-8", "utf-16le", "latin-1"):
+            try:
+                return raw.decode(encoding, errors="ignore")
+            except Exception:
+                continue
+        return ""
+
+    def _extract_clipboard_html_fragment(self, raw_html):
+        text = str(raw_html or "")
+        if not text:
+            return ""
+        start_match = re.search(r"StartFragment:(\d+)", text)
+        end_match = re.search(r"EndFragment:(\d+)", text)
+        if start_match and end_match:
+            try:
+                start = int(start_match.group(1))
+                end = int(end_match.group(1))
+                fragment = text[start:end]
+                if fragment.strip():
+                    return fragment
+            except Exception:
+                pass
+        marker_start = "<!--StartFragment-->"
+        marker_end = "<!--EndFragment-->"
+        if marker_start in text and marker_end in text:
+            start = text.index(marker_start) + len(marker_start)
+            end = text.index(marker_end, start)
+            fragment = text[start:end]
+            if fragment.strip():
+                return fragment
+        return text
+
+    def _parse_clipboard_html_rows(self, raw_html):
+        fragment = self._extract_clipboard_html_fragment(raw_html)
+        if "<table" not in fragment.lower():
+            return []
+        parser = _ClipboardTableHTMLParser()
+        try:
+            parser.feed(fragment)
+            parser.close()
+        except Exception:
+            return []
+        rows = []
+        for cells in parser.rows:
+            if len(cells) < 2:
+                continue
+            word = str(cells[0] or "").strip()
+            if not word:
+                continue
+            note_parts = []
+            for cell in cells[1:]:
+                for line in str(cell or "").replace("\r", "\n").split("\n"):
+                    clean_line = re.sub(r"[ \t]+", " ", str(line or "")).strip()
+                    if clean_line:
+                        note_parts.append(clean_line)
+            note = " | ".join(note_parts).strip()
+            rows.append({"word": word, "note": note})
+        return rows
+
+    def _parse_tabular_text_rows(self, raw_text):
+        text = str(raw_text or "").replace("\r\n", "\n").replace("\r", "\n")
+        if "\t" not in text:
+            return []
+        rows = []
+        current = None
+        for raw_line in text.split("\n"):
+            line = raw_line.rstrip()
+            if not line.strip():
+                continue
+            if "\t" in line:
+                parts = [part.strip() for part in line.split("\t")]
+                word = str(parts[0] or "").strip()
+                if not word:
+                    current = None
+                    continue
+                note = " | ".join(str(part or "").strip() for part in parts[1:] if str(part or "").strip()).strip()
+                current = {"word": word, "note": note}
+                rows.append(current)
+                continue
+            if current is not None:
+                extra = str(line or "").strip()
+                if extra:
+                    current["note"] = " | ".join(part for part in [current.get("note") or "", extra] if part).strip()
+        return rows
+
+    def _read_clipboard_import_rows(self):
+        html_rows = self._parse_clipboard_html_rows(self._get_windows_clipboard_html())
+        if html_rows:
+            return html_rows
+        try:
+            raw = self.clipboard_get()
+        except Exception:
+            return []
+        table_rows = self._parse_tabular_text_rows(raw)
+        if table_rows:
+            return table_rows
+        return self._parse_manual_rows(raw)
+
     def _looks_like_word_line(self, text):
         value = str(text or "").strip()
         if not value:
             return False
         if re.search(r"[\u4e00-\u9fff]", value):
             return False
-        letters = len(re.findall(r"[A-Za-z]", value))
+        # Manual paste fallback is intended for English words/short phrases.
+        # Be conservative here so note text such as French words in column 2
+        # is kept as notes instead of being promoted to a new word row.
+        if any(ord(ch) > 127 for ch in value):
+            return False
+        if re.search(r"[.!?;:，；。！？：]", value):
+            return False
+        if re.search(r"[^A-Za-z0-9 '\-()/&]", value):
+            return False
+        words = re.findall(r"[A-Za-z]+(?:['-][A-Za-z]+)?", value)
+        if not words:
+            return False
+        if len(words) > 5:
+            return False
+        letters = sum(len(token) for token in words)
         if letters <= 0:
             return False
-        cjk_count = len(re.findall(r"[\u4e00-\u9fff]", value))
-        return cjk_count == 0 and letters >= max(1, len(value) // 4)
+        if len(value) > max(letters + 10, 36):
+            return False
+        return True
 
     def _append_manual_preview_rows(self, rows, replace=False):
         if not self.manual_words_table:
@@ -2996,11 +3833,7 @@ class MainView(ttk.Frame):
                 self.manual_words_table.delete(item_id)
 
     def on_manual_preview_paste(self, _event=None):
-        try:
-            raw = self.clipboard_get()
-        except Exception:
-            return "break"
-        rows = self._parse_manual_rows(raw)
+        rows = self._read_clipboard_import_rows()
         if not rows:
             return "break"
         self._append_manual_preview_rows(rows, replace=False)
@@ -3173,11 +4006,7 @@ class MainView(ttk.Frame):
         self.manual_words_window.protocol("WM_DELETE_WINDOW", self._close_manual_words_window)
 
     def on_word_table_paste(self, _event=None):
-        try:
-            raw = self.clipboard_get()
-        except Exception:
-            return "break"
-        rows = self._parse_manual_rows(raw)
+        rows = self._read_clipboard_import_rows()
         if not rows:
             return "break"
         self._apply_manual_words(rows, mode="append")
@@ -3496,6 +4325,8 @@ class MainView(ttk.Frame):
         cached_pos = get_cached_pos(words)
         self.translations = dict(cached)
         self.word_pos = dict(cached_pos)
+        self.pending_translation_words.clear()
+        self.pending_analysis_words.clear()
         self.word_table.delete(*self.word_table.get_children())
         for idx, w in enumerate(words):
             note = self.store.notes[idx] if idx < len(self.store.notes) else ""
@@ -3521,18 +4352,22 @@ class MainView(ttk.Frame):
             self._start_audio_precache_job(words)
 
     def _start_translation_job(self, words, token):
-        if not words:
+        requested_words = [str(word or "").strip() for word in (words or []) if str(word or "").strip()]
+        if not requested_words:
             return
+        self.pending_translation_words.update(requested_words)
 
         def _run():
-            translated = translate_words_en_zh(words)
-            self.after(0, lambda: self._apply_translations(token, translated))
+            translated = translate_words_en_zh(requested_words)
+            self.after(0, lambda: self._apply_translations(token, requested_words, translated))
 
         import threading
 
         threading.Thread(target=_run, daemon=True).start()
 
-    def _apply_translations(self, token, translated):
+    def _apply_translations(self, token, requested_words, translated):
+        for word in requested_words or []:
+            self.pending_translation_words.discard(word)
         if token != self.translation_token or not self.word_table:
             return
         self.translations.update(translated)
@@ -3543,6 +4378,15 @@ class MainView(ttk.Frame):
             tag = "even" if idx % 2 == 0 else "odd"
             self.word_table.item(str(idx), values=self._build_word_table_values(idx, word, note), tags=(tag,))
         self._refresh_selection_details()
+
+    def _ensure_word_metadata(self, word):
+        target = str(word or "").strip()
+        if not target:
+            return
+        if not str(self.word_pos.get(target) or "").strip() and target not in self.pending_analysis_words:
+            self._start_analysis_job([target], self.analysis_token)
+        if not str(self.translations.get(target) or "").strip() and target not in self.pending_translation_words:
+            self._start_translation_job([target], self.translation_token)
 
     def update_empty_state(self):
         if self.store.words:
@@ -5756,6 +6600,8 @@ class MainView(ttk.Frame):
         if selected_index is None:
             self._refresh_selection_details()
             return
+        if 0 <= selected_index < len(self.store.words):
+            self._ensure_word_metadata(self.store.words[selected_index])
         self._refresh_selection_details()
         self._speak_selected_word_if_needed(selected_index)
 

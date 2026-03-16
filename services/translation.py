@@ -1,7 +1,11 @@
 # -*- coding: utf-8 -*-
 import json
+import re
 import threading
+import unicodedata
 from pathlib import Path
+
+from services.user_dictionary import get_entries as get_user_dictionary_entries, set_entry as set_user_dictionary_entry
 
 _lock = threading.Lock()
 _translation = None
@@ -9,6 +13,13 @@ _init_error = None
 _prepare_started = False
 _CACHE_PATH = Path(__file__).resolve().parent.parent / "data" / "translation_cache.json"
 _cache_data = None
+
+_DUPLICATE_BRACKET_PATTERNS = [
+    ("(", ")"),
+    ("（", "）"),
+    ("[", "]"),
+    ("【", "】"),
+]
 
 
 def _find_lang(langs, prefix):
@@ -25,8 +36,6 @@ def _ensure_translation():
     with _lock:
         if _translation is not None:
             return _translation
-        if _init_error:
-            raise RuntimeError(_init_error)
 
     try:
         import argostranslate.package
@@ -77,6 +86,53 @@ def _normalize_cache_key(text):
     return str(text or "").strip().casefold()
 
 
+def _normalize_translation_text(text):
+    value = unicodedata.normalize("NFKC", str(text or "")).strip()
+    if not value:
+        return ""
+
+    value = re.sub(r"\s+", " ", value)
+    value = re.sub(r"\s*([,;:，；：])\s*", r"\1 ", value)
+    value = re.sub(r"\s+\)", ")", value)
+    value = re.sub(r"\(\s+", "(", value)
+    value = re.sub(r"\s+）", "）", value)
+    value = re.sub(r"（\s+", "（", value)
+    value = value.strip(" ,;:，；：")
+
+    for left, right in _DUPLICATE_BRACKET_PATTERNS:
+        escaped_left = re.escape(left)
+        escaped_right = re.escape(right)
+        pattern = rf"^(?P<outer>.+?)\s*{escaped_left}\s*(?P<inner>.+?)\s*{escaped_right}$"
+        match = re.match(pattern, value)
+        if not match:
+            continue
+        outer = str(match.group("outer") or "").strip()
+        inner = str(match.group("inner") or "").strip()
+        if outer and inner and outer.casefold() == inner.casefold():
+            value = outer
+            break
+
+    separators = [" | ", "; ", "；", ", ", "，", "/"]
+    for separator in separators:
+        if separator not in value:
+            continue
+        pieces = [piece.strip() for piece in value.split(separator)]
+        deduped = []
+        seen = set()
+        for piece in pieces:
+            if not piece:
+                continue
+            key = piece.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(piece)
+        if deduped:
+            value = separator.join(deduped)
+
+    return value.strip()
+
+
 def _load_cache_locked():
     global _cache_data
     if _cache_data is not None:
@@ -90,6 +146,25 @@ def _load_cache_locked():
         _cache_data = data if isinstance(data, dict) else {}
     except Exception:
         _cache_data = {}
+    if not isinstance(_cache_data, dict):
+        _cache_data = {}
+    cleaned = {}
+    changed = False
+    for key, value in list(_cache_data.items()):
+        clean_key = _normalize_cache_key(key)
+        clean_value = _normalize_translation_text(value)
+        if not clean_key or not clean_value:
+            changed = True
+            continue
+        if clean_key in cleaned and cleaned[clean_key] == clean_value:
+            changed = True
+            continue
+        cleaned[clean_key] = clean_value
+        if key != clean_key or str(value or "") != clean_value:
+            changed = True
+    _cache_data = cleaned
+    if changed:
+        _save_cache_locked()
     return _cache_data
 
 
@@ -101,12 +176,19 @@ def _save_cache_locked():
 
 def get_cached_translations(words):
     result = {}
+    overrides = get_user_dictionary_entries(words)
+    for word, payload in overrides.items():
+        value = _normalize_translation_text((payload or {}).get("translation"))
+        if value:
+            result[word] = value
     with _lock:
         cache = _load_cache_locked()
         for word in words:
+            if word in result:
+                continue
             key = _normalize_cache_key(word)
             if key in cache:
-                result[word] = str(cache.get(key) or "")
+                result[word] = _normalize_translation_text(cache.get(key) or "")
     return result
 
 
@@ -116,7 +198,7 @@ def _update_translation_cache(pairs):
         cache = _load_cache_locked()
         for word, zh_text in pairs.items():
             key = _normalize_cache_key(word)
-            value = str(zh_text or "").strip()
+            value = _normalize_translation_text(zh_text)
             if not key or not value:
                 continue
             if cache.get(key) == value:
@@ -132,7 +214,8 @@ def set_cached_translation(word, zh_text):
     key = _normalize_cache_key(word)
     if not key:
         return False
-    value = str(zh_text or "").strip()
+    value = _normalize_translation_text(zh_text)
+    set_user_dictionary_entry(word, translation=value if value else "", pos=None)
     with _lock:
         cache = _load_cache_locked()
         changed = False
@@ -168,7 +251,7 @@ def prepare_async():
 
 def translate_text(text):
     translation = _ensure_translation()
-    return translation.translate(str(text))
+    return _normalize_translation_text(translation.translate(str(text)))
 
 
 def translate_words(words):

@@ -12,6 +12,7 @@ _DEFAULT_CONFIG = {
     "tts_api_key": "",
     "gemini_model": "gemini-2.5-flash",
     "ui_language": "zh",
+    "update_manifest_url": "",
 }
 
 
@@ -127,4 +128,14 @@ def get_ui_language():
 def set_ui_language(language):
     config = load_config()
     config["ui_language"] = "en" if str(language or "").strip().lower() == "en" else "zh"
+    save_config(config)
+
+
+def get_update_manifest_url():
+    return str(load_config().get("update_manifest_url") or "").strip()
+
+
+def set_update_manifest_url(url):
+    config = load_config()
+    config["update_manifest_url"] = str(url or "").strip()
     save_config(config)

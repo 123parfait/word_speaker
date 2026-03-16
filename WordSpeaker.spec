@@ -26,6 +26,7 @@ pathex = [
 datas = [
     (str(ROOT / "data" / "models"), "data/models"),
     (str(ROOT / "data" / "nltk_data"), "data/nltk_data"),
+    (str(ROOT / "version.json"), "."),
 ]
 binaries = []
 hiddenimports = [

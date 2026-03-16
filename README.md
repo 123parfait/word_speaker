@@ -10,6 +10,10 @@ Word Speaker is a Windows desktop app for vocabulary study, pronunciation practi
 - Generate IELTS-style passages and example sentences
 - Search imported corpus documents locally
 - Configure separate `LLM API` and `TTS API`
+- Export/import shared word-audio cache packs to reuse generated TTS across devices
+- Export/import clean word resource packs as `.wspack` instead of sharing the whole `data` folder
+- Update the packaged app from `Tools > Update App` via an online manifest or a local update zip
+- Build an update zip and optional online manifest from a packaged app folder
 
 For the full feature list, TTS/cache behavior, dictation workflow, and runtime file layout, see [GUIDE.md](GUIDE.md).
 
@@ -59,6 +63,19 @@ When sharing the packaged build:
 - extract to a short path such as `D:\WS` or `C:\WordSpeaker`
 
 If extraction skips files because of Windows path-length errors, the app may fail at startup with missing `numpy`/DLL errors because required files were not extracted completely.
+
+## Distribution Notes
+
+- `Tools > Export Shared Cache` creates a reusable audio-cache package for generated word audio only
+- `Tools > Export Resource Pack` creates a `.wspack` file containing:
+  - word
+  - note
+  - manually corrected part of speech
+  - manually corrected Chinese translation
+- `.wspack` is the recommended format for sharing curated vocabulary content
+- do not share the whole `data/` folder between users
+- packaged online updates can use a GitHub Release or any other hosted `.zip`, as long as the app can read a matching `manifest.json`
+- users still need one initial packaged build that already contains the updater; after that, they can update from inside the app
 
 ## Credits
 

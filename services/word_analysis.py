@@ -4,6 +4,7 @@ import threading
 from pathlib import Path
 
 from services.corpus_search import get_nlp
+from services.user_dictionary import get_entries as get_user_dictionary_entries, set_entry as set_user_dictionary_entry
 
 
 _CACHE_PATH = Path(__file__).resolve().parent.parent / "data" / "pos_cache.json"
@@ -56,9 +57,16 @@ def _save_cache_locked():
 
 def get_cached_pos(words):
     result = {}
+    overrides = get_user_dictionary_entries(words)
+    for word, payload in overrides.items():
+        value = str((payload or {}).get("pos") or "").strip()
+        if value:
+            result[word] = value
     with _lock:
         cache = _load_cache_locked()
         for word in words:
+            if word in result:
+                continue
             key = _normalize_key(word)
             if key and key in cache:
                 result[word] = str(cache.get(key) or "")
@@ -129,6 +137,7 @@ def set_cached_pos(word, pos_label):
     if not key:
         return False
     value = str(pos_label or "").strip()
+    set_user_dictionary_entry(word, translation=None, pos=value if value else "")
     with _lock:
         cache = _load_cache_locked()
         changed = False
