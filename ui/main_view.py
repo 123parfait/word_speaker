@@ -24,9 +24,10 @@ from services.tts import (
     queue_word_audio_generation as tts_queue_word_audio_generation,
     rename_cache_source_path as tts_rename_cache_source_path,
     rebind_manual_session_cache_to_source as tts_rebind_manual_session_cache_to_source,
+    dedupe_pending_online_queue as tts_dedupe_pending_online_queue,
     set_preferred_pending_source as tts_set_preferred_pending_source,
     get_backend_status as tts_get_backend_status,
-    get_gemini_queue_status as tts_get_gemini_queue_status,
+    get_online_tts_queue_status as tts_get_online_tts_queue_status,
     get_runtime_label as tts_get_runtime_label,
     has_cached_word_audio as tts_has_cached_word_audio,
 )
@@ -40,7 +41,7 @@ from services.word_analysis import (
     get_cached_pos,
     set_cached_pos,
 )
-from services.synonyms import get_synonyms as get_local_synonyms
+from services.synonyms import get_synonyms as get_synonyms_for_word
 from services.ielts_passage import build_ielts_listening_passage
 from services.app_config import (
     get_llm_api_key,
@@ -110,7 +111,9 @@ UI_TEXTS = {
         "synonyms_error": "近义词错误",
         "synonyms_ready": "{word} 的近义词已准备好。",
         "no_synonyms_found": "没有找到合适的近义词。",
-        "synonyms_source": "来源：spaCy + WordNet（本地）",
+        "synonyms_source": "来源：{source}",
+        "synonyms_source_gemini": "Gemini",
+        "synonyms_source_local": "本地回退（spaCy + WordNet）",
         "synonyms_focus": "匹配词：{word}",
         "inspect_audio_cache": "查询音频缓存",
         "delete_word": "删除单词",
@@ -148,6 +151,7 @@ UI_TEXTS = {
         "gemini_api_key": "大模型 API",
         "llm_api": "大模型 API",
         "tts_api": "TTS API",
+        "api_setup": "API 设置",
         "api_provider": "提供方",
         "provider_gemini": "Gemini",
         "provider_elevenlabs": "ElevenLabs",
@@ -155,6 +159,7 @@ UI_TEXTS = {
         "llm_key_desc": "用于文章生成、例句生成等 AI 功能。当前实现支持 Gemini。",
         "tts_api_setup": "TTS API 设置",
         "tts_key_desc": "用于在线语音生成。当前实现支持 Gemini TTS 和 ElevenLabs。ElevenLabs 默认使用偏英式的标准发音。",
+        "api_setup_desc": "在同一个窗口里配置大模型 API 和在线 TTS API。两项会分别测试并保存。",
         "tts_api_key_error": "TTS API Key 错误",
         "paste_tts_key_first": "请先粘贴 TTS API Key。",
         "tts_status_normal": "{provider} 正常",
@@ -162,8 +167,11 @@ UI_TEXTS = {
         "tts_status_error": "{provider} 错误",
         "tts_status_idle": "{provider} 空闲",
         "tts_status_retry_at": "下次请求时间：{time}",
+        "tts_status_retry_at_in": "下次请求时间：{time}（约 {seconds} 秒后）",
         "tts_status_retry_none": "下次请求时间：-",
         "tts_status_queue": "等待队列：{count}",
+        "tts_status_queue_processing": "队列处理中：{count}",
+        "tts_status_queue_waiting": "等待重试：{count}",
         "order_desc": "选择顺序、随机不重复，或点击播放。",
         "stop_after_list": "播完整个列表后停止",
         "speed_desc": "间隔：单词与单词之间的时间。",
@@ -249,6 +257,17 @@ UI_TEXTS = {
         "error": "错误",
         "save_error": "保存失败",
         "wrong_words": "错词",
+        "answer_review": "对答案",
+        "answer_review_title": "对答案",
+        "answer_review_so_far": "到目前为止正确率",
+        "last_session_accuracy": "上次听写正确率",
+        "session_attempts": "本轮作答",
+        "your_answer": "你的输入",
+        "wrong_times": "错过次数",
+        "show_wrong_only": "查看错词",
+        "show_all_answers": "查看全部",
+        "no_answers_yet": "本轮还没有作答记录。",
+        "blank_answer": "(空白)",
         "add_wrong_word": "手动添加错词",
         "wrong_word_added": "已把 {word} 加入错词表。",
         "delete_history_confirm": "要从 app 历史里删除这个文件记录，并清理对应缓存吗？\n\n{name}\n\n不会删除电脑上的原文件。",
@@ -340,7 +359,9 @@ UI_TEXTS = {
         "synonyms_error": "Synonyms Error",
         "synonyms_ready": "Synonyms are ready for {word}.",
         "no_synonyms_found": "No suitable synonyms were found.",
-        "synonyms_source": "Source: spaCy + WordNet (Local)",
+        "synonyms_source": "Source: {source}",
+        "synonyms_source_gemini": "Gemini",
+        "synonyms_source_local": "Local fallback (spaCy + WordNet)",
         "synonyms_focus": "Matched token: {word}",
         "inspect_audio_cache": "Inspect Audio Cache",
         "delete_word": "Delete Word",
@@ -378,6 +399,7 @@ UI_TEXTS = {
         "gemini_api_key": "LLM API",
         "llm_api": "LLM API",
         "tts_api": "TTS API",
+        "api_setup": "API Setup",
         "api_provider": "Provider",
         "provider_gemini": "Gemini",
         "provider_elevenlabs": "ElevenLabs",
@@ -385,6 +407,7 @@ UI_TEXTS = {
         "llm_key_desc": "Used for passage generation, sentence generation, and other AI features. Gemini is currently implemented.",
         "tts_api_setup": "TTS API setup",
         "tts_key_desc": "Used for online speech synthesis. Gemini TTS and ElevenLabs are currently implemented. ElevenLabs defaults to a British-style standard voice.",
+        "api_setup_desc": "Configure the LLM API and online TTS API in one window. Each section is tested and saved independently.",
         "tts_api_key_error": "TTS API Key Error",
         "paste_tts_key_first": "Please paste a TTS API key first.",
         "tts_status_normal": "{provider} OK",
@@ -392,8 +415,11 @@ UI_TEXTS = {
         "tts_status_error": "{provider} Error",
         "tts_status_idle": "{provider} Idle",
         "tts_status_retry_at": "Next request: {time}",
+        "tts_status_retry_at_in": "Next request: {time} (in about {seconds}s)",
         "tts_status_retry_none": "Next request: -",
         "tts_status_queue": "Queue: {count}",
+        "tts_status_queue_processing": "Processing queue: {count}",
+        "tts_status_queue_waiting": "Waiting to retry: {count}",
         "order_desc": "Choose in-order, random (no repeat), or click-to-play.",
         "stop_after_list": "Stop after list (no repeat list)",
         "speed_desc": "Interval: time between words.",
@@ -479,6 +505,17 @@ UI_TEXTS = {
         "error": "Error",
         "save_error": "Save Error",
         "wrong_words": "Wrong Words",
+        "answer_review": "Answer Review",
+        "answer_review_title": "Answer Review",
+        "answer_review_so_far": "Accuracy so far",
+        "last_session_accuracy": "Last session accuracy",
+        "session_attempts": "Session Attempts",
+        "your_answer": "Your Answer",
+        "wrong_times": "Wrong Count",
+        "show_wrong_only": "View Wrong Words",
+        "show_all_answers": "View All",
+        "no_answers_yet": "No answers yet in this session.",
+        "blank_answer": "(blank)",
         "add_wrong_word": "Add Wrong Word",
         "wrong_word_added": "Added {word} to the wrong-word list.",
         "delete_history_confirm": "Remove this file from app history and clear its related cache?\n\n{name}\n\nThe original file on your computer will not be deleted.",
@@ -641,6 +678,8 @@ class MainView(ttk.Frame):
         self.word_edit_column = None
         self.suppress_word_select_action = False
         self.suppress_dictation_select_action = False
+        self.last_word_speak_index = None
+        self.last_word_speak_at = 0.0
         self.sentence_window = None
         self.synonym_window = None
         self.manual_words_window = None
@@ -660,6 +699,7 @@ class MainView(ttk.Frame):
         self.translation_token = 0
         self.analysis_token = 0
         self.manual_source_dirty = False
+        self.ui_language_var = tk.StringVar(value=get_ui_language())
         self.passage_window = None
         self.passage_text = None
         self.passage_status_var = tk.StringVar(value="Load words and click Generate.")
@@ -669,12 +709,16 @@ class MainView(ttk.Frame):
         self.llm_api_provider_var = tk.StringVar(value=self.tr("provider_gemini"))
         self.tts_api_provider_var = tk.StringVar(value=self._tts_provider_label(get_tts_api_provider()))
         self.gemini_verified = False
-        self.gemini_key_window = None
+        self.api_key_window = None
+        self.api_key_force_llm = False
+        self.api_key_force_tts = False
         self.gemini_key_var = tk.StringVar(value=get_llm_api_key())
         self.gemini_key_status_var = tk.StringVar(value="Paste your LLM API key, then test it.")
-        self.tts_key_window = None
         self.tts_key_var = tk.StringVar(value=get_tts_api_key())
         self.tts_key_status_var = tk.StringVar(value="Paste your TTS API key, then test it.")
+        self.api_key_test_btn = None
+        self.api_llm_entry = None
+        self.api_tts_entry = None
         self.gemini_runtime_status_var = tk.StringVar(value="")
         self.gemini_retry_status_var = tk.StringVar(value="")
         self.gemini_status_after = None
@@ -708,7 +752,6 @@ class MainView(ttk.Frame):
         self.find_task_token = 0
         self.find_active_token = 0
         self.audio_precache_token = 0
-        self.ui_language_var = tk.StringVar(value=get_ui_language())
         self.dictation_mode_var = tk.StringVar(value="online_spelling")
         self.dictation_feedback_var = tk.StringVar(value="live")
         self.dictation_speed_var = tk.StringVar(value="1.0")
@@ -738,12 +781,17 @@ class MainView(ttk.Frame):
         self.dictation_index = -1
         self.dictation_current_word = ""
         self.dictation_wrong_items = []
+        self.dictation_session_attempts = []
         self.dictation_correct_count = 0
         self.dictation_answer_revealed = False
         self.dictation_running = False
         self.dictation_paused = False
         self.dictation_seconds_left = 0
         self.dictation_session_source_path = None
+        self.dictation_previous_session_accuracy = self.store.get_last_dictation_accuracy()
+        self.dictation_answer_review_popup = None
+        self.dictation_answer_review_tree = None
+        self.dictation_answer_review_show_wrong_only = False
         self.right_notebook = None
         self.review_tab = None
         self.check_tab = None
@@ -790,7 +838,7 @@ class MainView(ttk.Frame):
         self.update_right_visibility()
         tts_prepare_async()
         self.refresh_gemini_models()
-        self.after(150, self.ensure_gemini_api_key)
+        self.after(150, self.ensure_api_credentials)
 
     def tr(self, key):
         language = "en" if self.ui_language_var.get() == "en" else "zh"
@@ -1194,6 +1242,7 @@ class MainView(ttk.Frame):
 
     def close_dictation_window(self):
         self.close_dictation_mode_picker()
+        self.close_dictation_answer_review_popup()
         self._cancel_dictation_timer()
         self._cancel_dictation_feedback_reset()
         if self.dictation_window and self.dictation_window.winfo_exists():
@@ -1210,6 +1259,7 @@ class MainView(ttk.Frame):
         self.dictation_input = None
         self.dictation_result_label = None
         self.dictation_progress = None
+        self.dictation_answer_review_tree = None
         self.play_btn_check = None
         self.dictation_speed_buttons = []
         self.dictation_feedback_buttons = []
@@ -1377,7 +1427,7 @@ class MainView(ttk.Frame):
         input_card = ttk.Frame(self.dictation_session_frame, style="Card.TFrame")
         input_card.grid(row=2, column=0, sticky="ew", pady=(12, 0))
         input_card.grid_columnconfigure(0, weight=1)
-        input_card.grid_columnconfigure(1, weight=0)
+        input_card.grid_columnconfigure(1, weight=0, minsize=78)
         self.dictation_input = tk.Entry(
             input_card,
             font=("Segoe UI", 24, "bold"),
@@ -1390,13 +1440,18 @@ class MainView(ttk.Frame):
         self.dictation_input.grid(row=0, column=0, sticky="ew", padx=(0, 8), ipady=20)
         self.dictation_input.bind("<KeyRelease>", self.on_dictation_input_change)
         self.dictation_input.bind("<Return>", self.on_dictation_enter)
+        timer_wrap = ttk.Frame(input_card, style="Card.TFrame")
+        timer_wrap.grid(row=0, column=1, sticky="ne")
         ttk.Label(
-            input_card,
+            timer_wrap,
             textvariable=self.dictation_timer_var,
             font=("Segoe UI", 18),
             style="Card.TLabel",
             foreground="#6b7280",
-        ).grid(row=0, column=1, sticky="ne")
+            width=6,
+            anchor="e",
+            justify="right",
+        ).grid(row=0, column=0, sticky="e", pady=(4, 0))
 
         self.dictation_result_label = ttk.Label(
             self.dictation_session_frame,
@@ -1430,6 +1485,11 @@ class MainView(ttk.Frame):
         ttk.Button(control_row, text=self.tr("replay"), command=self.replay_dictation_word).grid(
             row=0, column=3, padx=(6, 0), sticky="ew"
         )
+        ttk.Button(
+            self.dictation_session_frame,
+            text=self.tr("answer_review"),
+            command=self.open_dictation_answer_review_popup,
+        ).grid(row=6, column=0, sticky="ew", pady=(10, 0))
 
         self.dictation_result_frame = ttk.Frame(parent, style="Card.TFrame")
         self.dictation_result_frame.grid(row=0, column=0, sticky="nsew")
@@ -1597,6 +1657,20 @@ class MainView(ttk.Frame):
     def _format_word_subline(self, word):
         pos_label = str(self.word_pos.get(word) or "").strip()
         zh_text = str(self.translations.get(word) or "").strip()
+        if not pos_label:
+            try:
+                pos_label = str(get_cached_pos([word]).get(word) or "").strip()
+                if pos_label:
+                    self.word_pos[word] = pos_label
+            except Exception:
+                pos_label = ""
+        if not zh_text:
+            try:
+                zh_text = str(get_cached_translations([word]).get(word) or "").strip()
+                if zh_text:
+                    self.translations[word] = zh_text
+            except Exception:
+                zh_text = ""
         parts = [part for part in (pos_label, zh_text) if part]
         if parts:
             return " ".join(parts)
@@ -1613,7 +1687,11 @@ class MainView(ttk.Frame):
 
     def _build_dictation_table_values(self, idx, item):
         word = str(item.get("word") or "").strip()
+        pos_text = str(self.word_pos.get(word) or get_cached_pos([word]).get(word) or "").strip()
+        zh_text = str(self.translations.get(word) or get_cached_translations([word]).get(word) or "").strip()
         subtitle = self._format_word_subline(word)
+        if pos_text or zh_text:
+            subtitle = f"{pos_text}. {zh_text}".strip(". ").strip() if pos_text else zh_text
         note_value = ""
         try:
             note_index = self.store.words.index(word)
@@ -1732,7 +1810,7 @@ class MainView(ttk.Frame):
             }
             for word in self.store.words
         ]
-        self.dictation_recent_items = self.store.recent_wrong_words(self.store.words, limit=100)
+        self.dictation_recent_items = self.store.recent_wrong_words(limit=100)
         self.dictation_all_tab_var.set(f"全部({len(self.dictation_all_items)})")
         self.dictation_recent_tab_var.set(f"近期错词({len(self.dictation_recent_items)})")
         self.dictation_recent_list.delete(*self.dictation_recent_list.get_children())
@@ -1751,9 +1829,10 @@ class MainView(ttk.Frame):
             self.dictation_recent_list.selection_set("0")
             self.dictation_recent_list.focus("0")
         else:
-            empty_text = self.tr("dictation_empty_recent") if self.dictation_list_mode_var.get() == "recent" and self.store.words else (
-                self.tr("dictation_empty_list") if self.store.words else self.tr("import_words_first")
-            )
+            if self.dictation_list_mode_var.get() == "recent":
+                empty_text = self.tr("dictation_empty_recent")
+            else:
+                empty_text = self.tr("dictation_empty_list") if self.store.words else self.tr("import_words_first")
             self.dictation_recent_list.insert("", tk.END, iid="empty", values=("", empty_text, ""))
         self.set_dictation_list_mode(self.dictation_list_mode_var.get(), refresh=False)
 
@@ -1797,7 +1876,8 @@ class MainView(ttk.Frame):
                 frame.grid_remove()
 
     def open_dictation_mode_picker(self, auto_start=True):
-        if not self.store.words:
+        has_recent_wrong = bool(self.store.recent_wrong_words(limit=1))
+        if not self.store.words and not has_recent_wrong:
             self.show_info("import_words_first")
             return
         if self.dictation_mode_popup and self.dictation_mode_popup.winfo_exists():
@@ -1983,7 +2063,7 @@ class MainView(ttk.Frame):
     def _get_dictation_pool(self):
         items = self._get_dictation_source_items()
         if items:
-            words = [item["word"] for item in items if item.get("word") in self.store.words]
+            words = [str(item.get("word") or "").strip() for item in items if str(item.get("word") or "").strip()]
             if words:
                 return words
         return list(self.store.words)
@@ -2006,10 +2086,20 @@ class MainView(ttk.Frame):
         if not selection or selection[0] == "empty":
             return
         store_index = self._dictation_row_to_store_index(self.dictation_recent_list, row_id=selection[0])
-        if store_index is None or store_index >= len(self.store.words):
-            return
-        word = self.store.words[store_index]
-        self._sync_main_selection_to_index(store_index)
+        if store_index is not None and store_index < len(self.store.words):
+            word = self.store.words[store_index]
+            self._sync_main_selection_to_index(store_index)
+        else:
+            try:
+                view_index = int(selection[0])
+            except Exception:
+                return
+            items = self._get_dictation_source_items()
+            if view_index < 0 or view_index >= len(items):
+                return
+            word = str(items[view_index].get("word") or "").strip()
+            if not word:
+                return
         speak_async(
             word,
             self.volume_var.get() / 100.0,
@@ -2059,11 +2149,13 @@ class MainView(ttk.Frame):
             self.reset_dictation_view()
             return
         self.dictation_session_source_path = self._get_dictation_preview_source_path()
+        self.dictation_previous_session_accuracy = self.store.get_last_dictation_accuracy()
         safe_start = max(0, min(int(start_index or 0), max(0, len(self.dictation_pool) - 1)))
         if safe_start > 0:
             self.dictation_pool = self.dictation_pool[safe_start:] + self.dictation_pool[:safe_start]
         self.dictation_index = -1
         self.dictation_wrong_items = []
+        self.dictation_session_attempts = []
         self.dictation_correct_count = 0
         self.dictation_current_word = ""
         self.dictation_answer_revealed = False
@@ -2146,7 +2238,7 @@ class MainView(ttk.Frame):
         self._cancel_dictation_timer()
         self.dictation_seconds_left = self._dictation_seconds_for_speed()
         if self.dictation_seconds_left <= 0:
-            self.dictation_timer_var.set("manual")
+            self.dictation_timer_var.set("")
             return
         self.dictation_timer_var.set(f"{self.dictation_seconds_left}s")
         self.dictation_timer_after = self.after(1000, self._tick_dictation_timer)
@@ -2212,23 +2304,51 @@ class MainView(ttk.Frame):
         user_text = str(self.dictation_input.get() or "").strip() if self.dictation_input else ""
         target = str(self.dictation_current_word or "").strip()
         is_correct = self._normalize_dictation_compare_text(user_text) == self._normalize_dictation_compare_text(target)
-        self.store.record_dictation_result(target, user_text, is_correct)
         if is_correct:
             self.dictation_correct_count += 1
             self._set_dictation_input_color("correct")
             self.dictation_status_var.set(self.tr("dictation_correct"))
-            if self.dictation_session_source_path == self._get_recent_wrong_cache_source_path():
-                self.store.clear_wrong_word(target)
-                tts_cleanup_word_audio_cache(target, source_path=self._get_recent_wrong_cache_source_path())
-                self.refresh_dictation_recent_list()
         else:
             self._set_dictation_input_color("wrong")
             self.dictation_status_var.set(self.trf("dictation_wrong_answer", word=target))
+        if self.dictation_session_frame and self.dictation_session_frame.winfo_exists():
+            try:
+                self.dictation_session_frame.update_idletasks()
+            except Exception:
+                pass
+        self.store.record_dictation_result(target, user_text, is_correct)
+        stat_entry = self.store.get_dictation_word_stats(target)
+        attempt_entry = {
+            "position": int(self.dictation_index),
+            "word": target,
+            "input": user_text,
+            "correct": bool(is_correct),
+            "wrong_count": int(stat_entry.get("wrong_count", 0) or 0),
+        }
+        replaced = False
+        for idx, item in enumerate(self.dictation_session_attempts):
+            if int(item.get("position", -1)) == int(self.dictation_index):
+                self.dictation_session_attempts[idx] = attempt_entry
+                replaced = True
+                break
+        if not replaced:
+            self.dictation_session_attempts.append(attempt_entry)
+        if is_correct:
+            if self.dictation_session_source_path == self._get_recent_wrong_cache_source_path():
+                self.store.clear_wrong_word(target)
+                tts_cleanup_word_audio_cache(target, source_path=self._get_recent_wrong_cache_source_path())
+                for item in self.dictation_session_attempts:
+                    if int(item.get("position", -1)) == int(self.dictation_index):
+                        item["wrong_count"] = 0
+                        break
+                self.refresh_dictation_recent_list()
+        else:
             self.dictation_wrong_items.append({"word": target, "input": user_text})
             tts_promote_word_audio_to_recent_wrong(
                 target,
                 source_path=self.dictation_session_source_path or self.store.get_current_source_path(),
             )
+        self._refresh_dictation_answer_review_popup()
         delay = 1150 if trigger == "input" and is_correct else 1450
         self._cancel_dictation_feedback_reset()
         self.dictation_feedback_after = self.after(delay, self._go_to_next_dictation_word)
@@ -2258,7 +2378,8 @@ class MainView(ttk.Frame):
         self.dictation_progress_var.set(progress_text)
         self.dictation_progress["value"] = ((self.dictation_index + 1) / max(1, total)) * 100.0
         self.dictation_status_var.set(self.tr("dictation_listen_type"))
-        self.dictation_timer_var.set(f"{self._dictation_seconds_for_speed()}s" if self._dictation_seconds_for_speed() else "manual")
+        seconds_for_speed = self._dictation_seconds_for_speed()
+        self.dictation_timer_var.set(f"{seconds_for_speed}s" if seconds_for_speed else "")
         if self.dictation_input:
             self.dictation_input.delete(0, tk.END)
             self.dictation_input.focus_set()
@@ -2274,8 +2395,10 @@ class MainView(ttk.Frame):
         self.update_dictation_play_button()
         total = len(self.dictation_pool)
         accuracy = (self.dictation_correct_count / float(total)) * 100.0 if total else 0.0
+        self.store.save_last_dictation_accuracy(accuracy)
         self.dictation_summary_var.set(f"{accuracy:.2f}%")
         self.dictation_status_var.set(self.tr("dictation_session_complete"))
+        self._refresh_dictation_answer_review_popup()
         self.refresh_dictation_recent_list()
         self._show_dictation_frame(self.dictation_result_frame)
 
@@ -2286,6 +2409,7 @@ class MainView(ttk.Frame):
         self.dictation_index = -1
         self.dictation_current_word = ""
         self.dictation_session_source_path = None
+        self.dictation_session_attempts = []
         self._cancel_dictation_timer()
         self._cancel_dictation_feedback_reset()
         self.update_dictation_play_button()
@@ -2296,8 +2420,187 @@ class MainView(ttk.Frame):
         if self.dictation_input:
             self.dictation_input.delete(0, tk.END)
         self._set_dictation_input_color("neutral")
+        self.close_dictation_answer_review_popup()
         self._show_dictation_frame(self.dictation_setup_frame)
         self.refresh_dictation_recent_list()
+
+    def _dictation_accuracy_so_far(self):
+        attempted = len(self.dictation_session_attempts)
+        if attempted <= 0:
+            return 0.0
+        correct = sum(1 for item in self.dictation_session_attempts if item.get("correct"))
+        return (correct / float(attempted)) * 100.0
+
+    def _dictation_review_rows(self):
+        rows = []
+        cached_translations = self.translations or {}
+        cached_pos = self.word_pos or {}
+        attempts = sorted(self.dictation_session_attempts, key=lambda item: int(item.get("position", 0)))
+        for item in attempts:
+            word = str(item.get("word") or "").strip()
+            if not word:
+                continue
+            pos = str(cached_pos.get(word) or "").strip()
+            translation = str(cached_translations.get(word) or "").strip()
+            subtitle = " ".join(part for part in [pos, translation] if part).strip()
+            typed = str(item.get("input") or "").strip() or self.tr("blank_answer")
+            rows.append(
+                {
+                    "position": int(item.get("position", 0)),
+                    "word": word,
+                    "subtitle": subtitle,
+                    "input": typed,
+                    "correct": bool(item.get("correct")),
+                    "wrong_count": int(item.get("wrong_count", 0) or 0),
+                }
+            )
+        if self.dictation_answer_review_show_wrong_only:
+            rows = [row for row in rows if not row.get("correct")]
+        return rows
+
+    def close_dictation_answer_review_popup(self):
+        if self.dictation_answer_review_popup and self.dictation_answer_review_popup.winfo_exists():
+            self.dictation_answer_review_popup.destroy()
+        self.dictation_answer_review_popup = None
+        self.dictation_answer_review_tree = None
+
+    def _refresh_dictation_answer_review_popup(self):
+        if not self.dictation_answer_review_popup or not self.dictation_answer_review_popup.winfo_exists():
+            return
+        self._render_dictation_answer_review_popup()
+
+    def _toggle_dictation_answer_review_filter(self):
+        self.dictation_answer_review_show_wrong_only = not self.dictation_answer_review_show_wrong_only
+        self._render_dictation_answer_review_popup()
+
+    def _return_from_dictation_answer_review(self):
+        self.close_dictation_answer_review_popup()
+        self.reset_dictation_view()
+
+    def _render_dictation_answer_review_popup(self):
+        if not self.dictation_answer_review_popup or not self.dictation_answer_review_popup.winfo_exists():
+            return
+        popup = self.dictation_answer_review_popup
+        accuracy = self._dictation_accuracy_so_far()
+        previous_accuracy = self.dictation_previous_session_accuracy
+        self.dictation_answer_review_accuracy_var.set(f"{accuracy:.2f}%")
+        if previous_accuracy is None:
+            self.dictation_answer_review_last_var.set("-")
+        else:
+            self.dictation_answer_review_last_var.set(f"{float(previous_accuracy):.2f}%")
+        filter_text = self.tr("show_all_answers") if self.dictation_answer_review_show_wrong_only else self.tr("show_wrong_only")
+        self.dictation_answer_review_filter_var.set(filter_text)
+        rows = self._dictation_review_rows()
+        tree = self.dictation_answer_review_tree
+        if not tree:
+            return
+        tree.delete(*tree.get_children())
+        if not rows:
+            tree.insert("", tk.END, iid="empty", values=("", self.tr("no_answers_yet"), ""))
+            return
+        for idx, row in enumerate(rows, start=1):
+            tag_name = "correct" if row.get("correct") else "wrong"
+            tree.insert(
+                "",
+                tk.END,
+                iid=f"attempt_{idx}",
+                values=(
+                    f"{idx}. {row['word']}\n{row['subtitle']}" if row.get("subtitle") else f"{idx}. {row['word']}",
+                    row["input"],
+                    row["wrong_count"],
+                ),
+                tags=(tag_name,),
+            )
+        popup.update_idletasks()
+
+    def open_dictation_answer_review_popup(self):
+        if self.dictation_answer_review_popup and self.dictation_answer_review_popup.winfo_exists():
+            self._render_dictation_answer_review_popup()
+            self.dictation_answer_review_popup.deiconify()
+            self.dictation_answer_review_popup.lift()
+            return
+        popup = tk.Toplevel(self.dictation_window or self)
+        popup.title(self.tr("answer_review_title"))
+        popup.configure(bg="#f6f7fb")
+        popup.geometry("760x560")
+        popup.minsize(680, 460)
+        popup.protocol("WM_DELETE_WINDOW", self.close_dictation_answer_review_popup)
+        self.dictation_answer_review_popup = popup
+
+        self.dictation_answer_review_accuracy_var = tk.StringVar(value="0.00%")
+        self.dictation_answer_review_last_var = tk.StringVar(value="-")
+        self.dictation_answer_review_filter_var = tk.StringVar(value=self.tr("show_wrong_only"))
+
+        wrap = ttk.Frame(popup, style="Card.TFrame")
+        wrap.pack(fill="both", expand=True, padx=14, pady=14)
+        wrap.grid_columnconfigure(0, weight=1)
+        wrap.grid_rowconfigure(4, weight=1)
+
+        ttk.Label(
+            wrap,
+            textvariable=self.dictation_answer_review_accuracy_var,
+            font=("Segoe UI", 28, "bold"),
+            style="Card.TLabel",
+            foreground="#5b5cf0",
+        ).grid(row=0, column=0, sticky="n", pady=(8, 2))
+        ttk.Label(wrap, text=self.tr("answer_review_so_far"), style="Card.TLabel").grid(row=1, column=0, sticky="n")
+        previous_row = ttk.Frame(wrap, style="Card.TFrame")
+        previous_row.grid(row=2, column=0, sticky="n", pady=(8, 12))
+        ttk.Label(
+            previous_row,
+            text=f"{self.tr('last_session_accuracy')}: ",
+            style="Card.TLabel",
+            foreground="#667085",
+        ).grid(row=0, column=0, sticky="e")
+        ttk.Label(
+            previous_row,
+            textvariable=self.dictation_answer_review_last_var,
+            style="Card.TLabel",
+            foreground="#667085",
+        ).grid(row=0, column=1, sticky="w")
+
+        action_row = ttk.Frame(wrap, style="Card.TFrame")
+        action_row.grid(row=3, column=0, sticky="ew", pady=(0, 10))
+        action_row.grid_columnconfigure(0, weight=1)
+        action_row.grid_columnconfigure(1, weight=1)
+        ttk.Button(
+            action_row,
+            textvariable=self.dictation_answer_review_filter_var,
+            style="Primary.TButton",
+            command=self._toggle_dictation_answer_review_filter,
+        ).grid(row=0, column=0, sticky="ew", padx=(80, 10))
+        ttk.Button(
+            action_row,
+            text=self.tr("back_to_list"),
+            command=self._return_from_dictation_answer_review,
+        ).grid(row=0, column=1, sticky="ew", padx=(10, 80))
+
+        table_wrap = ttk.Frame(wrap, style="Card.TFrame")
+        table_wrap.grid(row=4, column=0, sticky="nsew")
+        table_wrap.grid_columnconfigure(0, weight=1)
+        table_wrap.grid_rowconfigure(0, weight=1)
+
+        tree = ttk.Treeview(
+            table_wrap,
+            columns=("word", "input", "count"),
+            show="headings",
+            style="WordList.Treeview",
+            height=12,
+        )
+        tree.heading("word", text=self.tr("word"))
+        tree.heading("input", text=self.tr("your_answer"))
+        tree.heading("count", text=self.tr("wrong_times"))
+        tree.column("word", width=390, minwidth=240, anchor="w", stretch=True)
+        tree.column("input", width=220, minwidth=150, anchor="w", stretch=True)
+        tree.column("count", width=110, minwidth=90, anchor="center", stretch=False)
+        tree.tag_configure("correct", foreground="#15803d")
+        tree.tag_configure("wrong", foreground="#dc2626")
+        tree.grid(row=0, column=0, sticky="nsew")
+        scroll = ttk.Scrollbar(table_wrap, orient="vertical", command=tree.yview)
+        scroll.grid(row=0, column=1, sticky="ns")
+        tree.configure(yscrollcommand=scroll.set)
+        self.dictation_answer_review_tree = tree
+        self._render_dictation_answer_review_popup()
 
     def show_dictation_wrong_words(self):
         if not self.dictation_wrong_items:
@@ -2851,6 +3154,7 @@ class MainView(ttk.Frame):
         self._set_word_action_context(idx)
         if self.word_table and self.word_table.exists(str(idx)):
             try:
+                self.suppress_word_select_action = True
                 self.word_table.selection_set(str(idx))
                 self.word_table.focus(str(idx))
             except Exception:
@@ -4024,8 +4328,20 @@ class MainView(ttk.Frame):
         self.gemini_model_var.set(current)
         set_generation_model(current)
 
+    def ensure_api_credentials(self):
+        need_llm = not str(get_llm_api_key() or "").strip()
+        need_tts = not str(get_tts_api_key() or "").strip()
+        if not need_llm and not need_tts:
+            return
+        self.open_api_key_window(force_llm=need_llm, force_tts=need_tts)
+
     def ensure_gemini_api_key(self):
-        self.open_gemini_key_window(force_verify=True)
+        self.open_api_key_window(force_llm=True, force_tts=False, initial_section="llm")
+
+    def ensure_tts_api_key(self):
+        if str(get_tts_api_key() or "").strip():
+            return
+        self.open_api_key_window(force_llm=False, force_tts=True, initial_section="tts")
 
     def _clear_gemini_validation_queue(self):
         try:
@@ -4053,6 +4369,8 @@ class MainView(ttk.Frame):
                     self._finish_gemini_validation_success(payload or {})
                 elif event_type == "success_tts":
                     self._finish_tts_validation_success(payload or {})
+                elif event_type == "success_api_setup":
+                    self._finish_combined_api_validation(payload or {})
                 elif event_type == "error":
                     self._finish_gemini_validation_error(str(payload or "Unknown error"))
                 elif event_type == "error_tts":
@@ -4064,19 +4382,25 @@ class MainView(ttk.Frame):
         if not done and token == self.gemini_validation_active_token:
             self.after(80, lambda t=token: self._poll_gemini_validation_events(t))
 
-    def open_gemini_key_window(self, force_verify=False):
-        self.gemini_verified = self.gemini_verified and not force_verify
-        if self.gemini_key_window and self.gemini_key_window.winfo_exists():
-            self.gemini_key_window.lift()
-            self.gemini_key_window.focus_force()
+    def open_api_key_window(self, force_llm=False, force_tts=False, initial_section="llm"):
+        self.gemini_verified = self.gemini_verified and not force_llm
+        self.api_key_force_llm = self.api_key_force_llm or force_llm
+        self.api_key_force_tts = self.api_key_force_tts or force_tts
+        if self.api_key_window and self.api_key_window.winfo_exists():
+            self.api_key_window.lift()
+            self.api_key_window.focus_force()
             return
 
         self.gemini_key_status_var.set("Paste your LLM API key, then test it.")
+        self.tts_key_status_var.set("Paste your TTS API key, then test it.")
         self.gemini_key_var.set(get_llm_api_key())
+        self.tts_key_var.set(get_tts_api_key())
         self.llm_api_provider_var.set(self.tr("provider_gemini"))
+        self.tts_api_provider_var.set(self._tts_provider_label(get_tts_api_provider()))
+
         win = tk.Toplevel(self)
-        self.gemini_key_window = win
-        win.title(self.tr("llm_api"))
+        self.api_key_window = win
+        win.title(self.tr("api_setup"))
         win.configure(bg="#f6f7fb")
         win.resizable(False, False)
         win.transient(self.winfo_toplevel())
@@ -4084,41 +4408,61 @@ class MainView(ttk.Frame):
         wrap = ttk.Frame(win, style="Card.TFrame")
         wrap.pack(fill="both", expand=True, padx=12, pady=12)
 
-        ttk.Label(wrap, text=self.tr("llm_api_setup"), style="Card.TLabel").pack(anchor="w")
+        ttk.Label(wrap, text=self.tr("api_setup"), style="Card.TLabel").pack(anchor="w")
         ttk.Label(
             wrap,
+            text=self.tr("api_setup_desc"),
+            style="Card.TLabel",
+            foreground="#666",
+        ).pack(anchor="w", pady=(0, 10))
+
+        llm_section = ttk.Frame(wrap, style="Card.TFrame")
+        llm_section.pack(fill="x")
+        ttk.Label(llm_section, text=self.tr("llm_api_setup"), style="Card.TLabel").pack(anchor="w")
+        ttk.Label(
+            llm_section,
             text=self.tr("llm_key_desc"),
             style="Card.TLabel",
             foreground="#666",
         ).pack(anchor="w", pady=(0, 8))
-
-        provider_row = ttk.Frame(wrap, style="Card.TFrame")
-        provider_row.pack(anchor="w", pady=(0, 8), fill="x")
-        ttk.Label(provider_row, text=f"{self.tr('api_provider')}:", style="Card.TLabel").pack(side=tk.LEFT)
-        provider_combo = ttk.Combobox(
-            provider_row,
+        llm_provider_row = ttk.Frame(llm_section, style="Card.TFrame")
+        llm_provider_row.pack(anchor="w", pady=(0, 8), fill="x")
+        ttk.Label(llm_provider_row, text=f"{self.tr('api_provider')}:", style="Card.TLabel").pack(side=tk.LEFT)
+        llm_provider_combo = ttk.Combobox(
+            llm_provider_row,
             textvariable=self.llm_api_provider_var,
             values=[self.tr("provider_gemini")],
             state="readonly",
             width=18,
         )
-        provider_combo.pack(side=tk.LEFT, padx=(6, 0))
-        provider_combo.bind("<<ComboboxSelected>>", lambda _e: set_llm_api_provider("gemini"))
+        llm_provider_combo.pack(side=tk.LEFT, padx=(6, 0))
+        llm_provider_combo.bind("<<ComboboxSelected>>", lambda _e: set_llm_api_provider("gemini"))
 
-        entry = ttk.Entry(wrap, textvariable=self.gemini_key_var, width=54, show="*")
-        entry.pack(fill="x")
-        entry.focus_set()
-        entry.icursor(tk.END)
-        entry.bind("<Return>", lambda _event: self.test_and_save_gemini_key())
+        llm_entry = tk.Entry(
+            llm_section,
+            textvariable=self.gemini_key_var,
+            width=54,
+            show="*",
+            relief="solid",
+            bd=1,
+            highlightthickness=1,
+            highlightbackground="#cbd5e1",
+            highlightcolor="#2563eb",
+            bg="white",
+        )
+        llm_entry.pack(fill="x")
+        llm_entry.icursor(tk.END)
+        llm_entry.bind("<Return>", lambda _event: self.test_and_save_api_keys())
+        llm_entry.bind("<KeyRelease>", lambda _event: self._set_api_entry_error("llm", False))
 
         ttk.Label(
-            wrap,
+            llm_section,
             text=self.tr("gemini_model_desc"),
             style="Card.TLabel",
             foreground="#666",
         ).pack(anchor="w", pady=(8, 4))
         combo = ttk.Combobox(
-            wrap,
+            llm_section,
             textvariable=self.gemini_model_var,
             values=self.gemini_model_values or list_available_gemini_models(),
             state="readonly",
@@ -4126,31 +4470,103 @@ class MainView(ttk.Frame):
         )
         combo.pack(anchor="w")
         combo.bind("<<ComboboxSelected>>", self.on_gemini_model_change)
-
-        ttk.Label(wrap, textvariable=self.gemini_key_status_var, style="Card.TLabel", foreground="#444").pack(
+        ttk.Label(llm_section, textvariable=self.gemini_key_status_var, style="Card.TLabel", foreground="#444").pack(
             anchor="w", pady=(10, 0)
         )
+        ttk.Separator(wrap, orient="horizontal").pack(fill="x", pady=12)
 
-        btn_row = ttk.Frame(wrap, style="Card.TFrame")
-        btn_row.pack(fill="x", pady=(10, 0))
-        self.gemini_key_test_btn = ttk.Button(btn_row, text=self.tr("test_and_save"), command=self.test_and_save_gemini_key)
-        self.gemini_key_test_btn.pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(btn_row, text=self.tr("exit"), command=self._cancel_gemini_key_setup).pack(side=tk.LEFT)
+        tts_section = ttk.Frame(wrap, style="Card.TFrame")
+        tts_section.pack(fill="x")
+        ttk.Label(tts_section, text=self.tr("tts_api_setup"), style="Card.TLabel").pack(anchor="w")
+        ttk.Label(
+            tts_section,
+            text=self.tr("tts_key_desc"),
+            style="Card.TLabel",
+            foreground="#666",
+        ).pack(anchor="w", pady=(0, 8))
+        tts_provider_row = ttk.Frame(tts_section, style="Card.TFrame")
+        tts_provider_row.pack(anchor="w", pady=(0, 8), fill="x")
+        ttk.Label(tts_provider_row, text=f"{self.tr('api_provider')}:", style="Card.TLabel").pack(side=tk.LEFT)
+        tts_provider_combo = ttk.Combobox(
+            tts_provider_row,
+            textvariable=self.tts_api_provider_var,
+            values=list(self._tts_provider_options().keys()),
+            state="readonly",
+            width=18,
+        )
+        tts_provider_combo.pack(side=tk.LEFT, padx=(6, 0))
+        tts_provider_combo.bind("<<ComboboxSelected>>", self._on_tts_provider_selected)
+
+        tts_entry = tk.Entry(
+            tts_section,
+            textvariable=self.tts_key_var,
+            width=54,
+            show="*",
+            relief="solid",
+            bd=1,
+            highlightthickness=1,
+            highlightbackground="#cbd5e1",
+            highlightcolor="#2563eb",
+            bg="white",
+        )
+        tts_entry.pack(fill="x")
+        tts_entry.icursor(tk.END)
+        tts_entry.bind("<Return>", lambda _event: self.test_and_save_api_keys())
+        tts_entry.bind("<KeyRelease>", lambda _event: self._set_api_entry_error("tts", False))
+
+        ttk.Label(tts_section, textvariable=self.tts_key_status_var, style="Card.TLabel", foreground="#444").pack(
+            anchor="w", pady=(10, 0)
+        )
+        footer = ttk.Frame(wrap, style="Card.TFrame")
+        footer.pack(fill="x", pady=(12, 0))
+        self.api_key_test_btn = ttk.Button(footer, text=self.tr("test_and_save"), command=self.test_and_save_api_keys)
+        self.api_key_test_btn.pack(side=tk.LEFT)
+        ttk.Button(footer, text=self.tr("close"), command=self._close_api_key_window).pack(side=tk.RIGHT)
+
+        self.api_llm_entry = llm_entry
+        self.api_tts_entry = tts_entry
+        self._set_api_entry_error("llm", False)
+        self._set_api_entry_error("tts", False)
+
+        if initial_section == "tts":
+            tts_entry.focus_set()
+        else:
+            llm_entry.focus_set()
 
         win.grab_set()
-        win.protocol("WM_DELETE_WINDOW", self._cancel_gemini_key_setup)
+        win.protocol("WM_DELETE_WINDOW", self._close_api_key_window)
 
-    def _cancel_gemini_key_setup(self):
-        if self.gemini_key_window and self.gemini_key_window.winfo_exists():
+    def open_gemini_key_window(self, force_verify=False):
+        self.open_api_key_window(force_llm=force_verify, force_tts=False, initial_section="llm")
+
+    def _close_api_key_window(self):
+        if self.api_key_window and self.api_key_window.winfo_exists():
             try:
-                self.gemini_key_window.grab_release()
+                self.api_key_window.grab_release()
             except Exception:
                 pass
-            self.gemini_key_window.destroy()
-        self.gemini_key_window = None
+            self.api_key_window.destroy()
+        self.api_key_window = None
+        self.api_key_test_btn = None
+        self.api_llm_entry = None
+        self.api_tts_entry = None
         self.gemini_key_test_btn = None
-        if not self.gemini_verified:
+        self.tts_key_test_btn = None
+        llm_missing = self.api_key_force_llm and not str(get_llm_api_key() or "").strip()
+        tts_missing = self.api_key_force_tts and not str(get_tts_api_key() or "").strip()
+        self.api_key_force_llm = False
+        self.api_key_force_tts = False
+        if llm_missing or tts_missing:
             self.winfo_toplevel().destroy()
+
+    def _set_api_entry_error(self, field, has_error):
+        widget = self.api_llm_entry if field == "llm" else self.api_tts_entry
+        if not widget or not widget.winfo_exists():
+            return
+        if has_error:
+            widget.configure(bg="#fff1f2", highlightbackground="#ef4444", highlightcolor="#ef4444")
+        else:
+            widget.configure(bg="white", highlightbackground="#cbd5e1", highlightcolor="#2563eb")
 
     def test_and_save_gemini_key(self):
         api_key = str(self.gemini_key_var.get() or "").strip()
@@ -4185,6 +4601,85 @@ class MainView(ttk.Frame):
         threading.Thread(target=_run, daemon=True).start()
         self.after(80, lambda t=token: self._poll_gemini_validation_events(t))
 
+    def test_and_save_api_keys(self):
+        llm_key = str(self.gemini_key_var.get() or "").strip()
+        tts_key = str(self.tts_key_var.get() or "").strip()
+        tts_provider = self._tts_provider_value()
+        model_name = self._get_selected_gemini_model()
+        llm_required = self.api_key_force_llm or bool(llm_key)
+        tts_required = self.api_key_force_tts or bool(tts_key)
+
+        self._set_api_entry_error("llm", False)
+        self._set_api_entry_error("tts", False)
+
+        has_local_error = False
+        if llm_required and not llm_key:
+            self.gemini_key_status_var.set("Please enter an LLM API key.")
+            self._set_api_entry_error("llm", True)
+            has_local_error = True
+        else:
+            self.gemini_key_status_var.set("Paste your LLM API key, then test it.")
+
+        if tts_required and not tts_key:
+            self.tts_key_status_var.set("Please enter a TTS API key.")
+            self._set_api_entry_error("tts", True)
+            has_local_error = True
+        else:
+            self.tts_key_status_var.set("Paste your TTS API key, then test it.")
+
+        if has_local_error:
+            return
+        if not llm_required and not tts_required:
+            messagebox.showinfo(self.tr("info"), "Please enter at least one API key.")
+            return
+
+        if llm_required:
+            self.gemini_key_status_var.set(f"Testing LLM key with {model_name}...")
+        if tts_required:
+            self.tts_key_status_var.set(f"Testing TTS API key with {self._tts_provider_label(tts_provider)}...")
+        if self.api_key_test_btn:
+            self.api_key_test_btn.config(state="disabled")
+
+        self.gemini_validation_token += 1
+        token = self.gemini_validation_token
+        self.gemini_validation_active_token = token
+        self._clear_gemini_validation_queue()
+
+        import threading
+
+        def _run():
+            result = {
+                "llm_required": llm_required,
+                "tts_required": tts_required,
+                "llm_ok": False,
+                "tts_ok": False,
+                "llm_error": "",
+                "tts_error": "",
+                "llm_api_key": llm_key,
+                "tts_api_key": tts_key,
+                "llm_model": model_name,
+                "tts_provider": tts_provider,
+            }
+            try:
+                if llm_required:
+                    try:
+                        validate_gemini_api_key(llm_key, model=model_name, timeout=25)
+                        result["llm_ok"] = True
+                    except Exception as e:
+                        result["llm_error"] = str(e)
+                if tts_required:
+                    try:
+                        validate_tts_api_key(tts_key, tts_provider, timeout=30)
+                        result["tts_ok"] = True
+                    except Exception as e:
+                        result["tts_error"] = str(e)
+                self._emit_gemini_validation_event("success_api_setup", token, result)
+            finally:
+                self._emit_gemini_validation_event("done", token, None)
+
+        threading.Thread(target=_run, daemon=True).start()
+        self.after(80, lambda t=token: self._poll_gemini_validation_events(t))
+
     def _finish_gemini_validation_success(self, payload):
         api_key = str(payload.get("api_key") or "").strip()
         model_name = str(payload.get("model") or DEFAULT_GEMINI_MODEL).strip()
@@ -4195,15 +4690,49 @@ class MainView(ttk.Frame):
         self.gemini_key_status_var.set("LLM API key is valid.")
         if self.gemini_key_test_btn:
             self.gemini_key_test_btn.config(state="normal")
-        if self.gemini_key_window and self.gemini_key_window.winfo_exists():
-            try:
-                self.gemini_key_window.grab_release()
-            except Exception:
-                pass
-            self.gemini_key_window.destroy()
-        self.gemini_key_window = None
-        self.gemini_key_test_btn = None
         self.status_var.set("LLM API ready.")
+        self._maybe_close_api_key_window()
+
+    def _finish_combined_api_validation(self, payload):
+        llm_required = bool(payload.get("llm_required"))
+        tts_required = bool(payload.get("tts_required"))
+        llm_ok = bool(payload.get("llm_ok"))
+        tts_ok = bool(payload.get("tts_ok"))
+        llm_error = str(payload.get("llm_error") or "").strip()
+        tts_error = str(payload.get("tts_error") or "").strip()
+
+        if llm_required and llm_ok:
+            set_llm_api_key(str(payload.get("llm_api_key") or "").strip())
+            set_llm_api_provider("gemini")
+            set_generation_model(str(payload.get("llm_model") or DEFAULT_GEMINI_MODEL).strip())
+            self.gemini_verified = True
+            self.gemini_key_status_var.set("LLM API key is valid.")
+            self._set_api_entry_error("llm", False)
+        elif llm_required:
+            self.gemini_verified = False
+            message = llm_error or "LLM API key test failed. Please paste another key."
+            self.gemini_key_status_var.set(message)
+            self._set_api_entry_error("llm", True)
+
+        if tts_required and tts_ok:
+            provider = str(payload.get("tts_provider") or "gemini").strip().lower()
+            set_tts_api_key(str(payload.get("tts_api_key") or "").strip())
+            set_tts_api_provider(provider)
+            self.tts_api_provider_var.set(self._tts_provider_label(provider))
+            self.tts_key_status_var.set("TTS API key is valid.")
+            self._set_api_entry_error("tts", False)
+            self.refresh_voice_list()
+        elif tts_required:
+            message = tts_error or "TTS API key test failed. Please paste another key."
+            self.tts_key_status_var.set(message)
+            self._set_api_entry_error("tts", True)
+
+        if self.api_key_test_btn:
+            self.api_key_test_btn.config(state="normal")
+
+        if (not llm_required or llm_ok) and (not tts_required or tts_ok):
+            self.status_var.set("API ready.")
+            self._maybe_close_api_key_window()
 
     def _finish_gemini_validation_error(self, message):
         self.gemini_verified = False
@@ -4219,77 +4748,12 @@ class MainView(ttk.Frame):
         return False
 
     def open_tts_key_window(self):
-        if self.tts_key_window and self.tts_key_window.winfo_exists():
-            self.tts_key_window.lift()
-            self.tts_key_window.focus_force()
-            return
-
-        self.tts_key_status_var.set("Paste your TTS API key, then test it.")
-        self.tts_key_var.set(get_tts_api_key())
-        self.tts_api_provider_var.set(self._tts_provider_label(get_tts_api_provider()))
-        win = tk.Toplevel(self)
-        self.tts_key_window = win
-        win.title(self.tr("tts_api"))
-        win.configure(bg="#f6f7fb")
-        win.resizable(False, False)
-        win.transient(self.winfo_toplevel())
-
-        wrap = ttk.Frame(win, style="Card.TFrame")
-        wrap.pack(fill="both", expand=True, padx=12, pady=12)
-
-        ttk.Label(wrap, text=self.tr("tts_api_setup"), style="Card.TLabel").pack(anchor="w")
-        ttk.Label(
-            wrap,
-            text=self.tr("tts_key_desc"),
-            style="Card.TLabel",
-            foreground="#666",
-        ).pack(anchor="w", pady=(0, 8))
-
-        provider_row = ttk.Frame(wrap, style="Card.TFrame")
-        provider_row.pack(anchor="w", pady=(0, 8), fill="x")
-        ttk.Label(provider_row, text=f"{self.tr('api_provider')}:", style="Card.TLabel").pack(side=tk.LEFT)
-        provider_combo = ttk.Combobox(
-            provider_row,
-            textvariable=self.tts_api_provider_var,
-            values=list(self._tts_provider_options().keys()),
-            state="readonly",
-            width=18,
-        )
-        provider_combo.pack(side=tk.LEFT, padx=(6, 0))
-        provider_combo.bind("<<ComboboxSelected>>", self._on_tts_provider_selected)
-
-        entry = ttk.Entry(wrap, textvariable=self.tts_key_var, width=54, show="*")
-        entry.pack(fill="x")
-        entry.focus_set()
-        entry.icursor(tk.END)
-        entry.bind("<Return>", lambda _event: self.test_and_save_tts_key())
-
-        ttk.Label(wrap, textvariable=self.tts_key_status_var, style="Card.TLabel", foreground="#444").pack(
-            anchor="w", pady=(10, 0)
-        )
-
-        btn_row = ttk.Frame(wrap, style="Card.TFrame")
-        btn_row.pack(fill="x", pady=(10, 0))
-        self.tts_key_test_btn = ttk.Button(btn_row, text=self.tr("test_and_save"), command=self.test_and_save_tts_key)
-        self.tts_key_test_btn.pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(btn_row, text=self.tr("close"), command=self._close_tts_key_window).pack(side=tk.LEFT)
-
-        win.grab_set()
-        win.protocol("WM_DELETE_WINDOW", self._close_tts_key_window)
-
-    def _close_tts_key_window(self):
-        if self.tts_key_window and self.tts_key_window.winfo_exists():
-            try:
-                self.tts_key_window.grab_release()
-            except Exception:
-                pass
-            self.tts_key_window.destroy()
-        self.tts_key_window = None
-        self.tts_key_test_btn = None
+        self.open_api_key_window(force_llm=False, force_tts=False, initial_section="tts")
 
     def _on_tts_provider_selected(self, _event=None):
         provider = self._tts_provider_value()
         set_tts_api_provider(provider)
+        tts_dedupe_pending_online_queue(provider)
         self.tts_api_provider_var.set(self._tts_provider_label(provider))
         self.refresh_voice_list()
 
@@ -4333,16 +4797,26 @@ class MainView(ttk.Frame):
         self.tts_key_status_var.set("TTS API key is valid.")
         if self.tts_key_test_btn:
             self.tts_key_test_btn.config(state="normal")
-        self._close_tts_key_window()
         self.tts_api_provider_var.set(self._tts_provider_label(provider))
         self.refresh_voice_list()
         self.status_var.set("TTS API ready.")
+        self._maybe_close_api_key_window()
 
     def _finish_tts_validation_error(self, message):
         self.tts_key_status_var.set("TTS API key test failed. Please paste another key.")
         if self.tts_key_test_btn:
             self.tts_key_test_btn.config(state="normal")
         messagebox.showerror(self.tr("tts_api_key_error"), str(message or "Unknown error"))
+
+    def _maybe_close_api_key_window(self):
+        llm_ready = bool(str(get_llm_api_key() or "").strip())
+        tts_ready = bool(str(get_tts_api_key() or "").strip())
+        if self.api_key_force_llm and not llm_ready:
+            return
+        if self.api_key_force_tts and not tts_ready:
+            return
+        if self.api_key_window and self.api_key_window.winfo_exists():
+            self._close_api_key_window()
 
     def generate_ielts_passage(self):
         if not self.store.words:
@@ -4566,7 +5040,7 @@ class MainView(ttk.Frame):
         self.settings_window = None
 
     def _refresh_settings_gemini_status(self):
-        status = tts_get_gemini_queue_status()
+        status = tts_get_online_tts_queue_status()
         provider_label = self._tts_provider_label(get_tts_api_provider())
         state = str(status.get("state") or "idle").strip().lower()
         if state == "rate_limited":
@@ -4578,12 +5052,22 @@ class MainView(ttk.Frame):
         else:
             status_text = self.trf("tts_status_idle", provider=provider_label)
         queue_count = int(status.get("queue_count") or 0)
-        self.gemini_runtime_status_var.set(f"{status_text} | {self.trf('tts_status_queue', count=queue_count)}")
+        if state == "rate_limited":
+            queue_text = self.trf("tts_status_queue_waiting", count=queue_count)
+        elif queue_count > 0:
+            queue_text = self.trf("tts_status_queue_processing", count=queue_count)
+        else:
+            queue_text = self.trf("tts_status_queue", count=queue_count)
+        self.gemini_runtime_status_var.set(f"{status_text} | {queue_text}")
 
         next_retry_at = float(status.get("next_retry_at") or 0.0)
         if next_retry_at > 0:
+            now = time.time()
+            remaining_seconds = max(0, int(round(next_retry_at - now)))
             retry_text = time.strftime("%H:%M:%S", time.localtime(next_retry_at))
-            self.gemini_retry_status_var.set(self.trf("tts_status_retry_at", time=retry_text))
+            self.gemini_retry_status_var.set(
+                self.trf("tts_status_retry_at_in", time=retry_text, seconds=remaining_seconds)
+            )
         else:
             self.gemini_retry_status_var.set(self.tr("tts_status_retry_none"))
 
@@ -5170,13 +5654,14 @@ class MainView(ttk.Frame):
             self.suppress_word_select_action = False
             return
         self._clear_word_action_context()
-        # Single-click only updates selection state.
         if not self.store.words:
             return
-        if self._get_selected_index() is None:
+        selected_index = self._get_selected_index()
+        if selected_index is None:
             self._refresh_selection_details()
             return
         self._refresh_selection_details()
+        self._speak_selected_word_if_needed(selected_index)
 
     def on_word_double_click(self, event=None):
         self._clear_word_action_context()
@@ -5189,9 +5674,20 @@ class MainView(ttk.Frame):
                 self.word_table.focus(row_id)
             except Exception:
                 pass
-        if self._get_selected_index() is not None:
-            self.speak_selected()
+        selected_index = self._get_selected_index()
+        if selected_index is not None:
+            self._speak_selected_word_if_needed(selected_index, force=True)
         return "break"
+
+    def _speak_selected_word_if_needed(self, selected_index, force=False):
+        if selected_index is None:
+            return
+        now = time.time()
+        if not force and self.last_word_speak_index == selected_index and (now - self.last_word_speak_at) < 0.35:
+            return
+        self.last_word_speak_index = selected_index
+        self.last_word_speak_at = now
+        self.speak_selected()
 
     def on_word_right_click(self, event):
         if not self.word_table or not self.word_context_menu:
@@ -5289,6 +5785,7 @@ class MainView(ttk.Frame):
                         data.get("word", ""),
                         data.get("focus", ""),
                         data.get("synonyms") or [],
+                        data.get("source", ""),
                     )
                 elif event_type == "error":
                     messagebox.showerror(self.tr("synonyms_error"), str(payload or "Unknown error"))
@@ -5371,7 +5868,7 @@ class MainView(ttk.Frame):
             self.show_info("select_word_first")
             return
         word = self.store.words[selected_idx]
-        self.status_var.set(f"Looking up local synonyms for '{word}'...")
+        self.status_var.set(f"Looking up synonyms for '{word}'...")
         self.synonym_lookup_token += 1
         token = self.synonym_lookup_token
         self.synonym_lookup_active_token = token
@@ -5381,7 +5878,7 @@ class MainView(ttk.Frame):
 
         def _run():
             try:
-                result = get_local_synonyms(word, limit=12)
+                result = get_synonyms_for_word(word, limit=12)
                 self._emit_synonym_event("result", token, result)
             except Exception as exc:
                 self._emit_synonym_event("error", token, str(exc))
@@ -5434,7 +5931,7 @@ class MainView(ttk.Frame):
         ).pack(side=tk.LEFT, padx=(0, 6))
         ttk.Button(row, text=self.tr("close"), command=self.sentence_window.destroy).pack(side=tk.LEFT)
 
-    def _show_synonym_window(self, word, focus, synonyms):
+    def _show_synonym_window(self, word, focus, synonyms, source=None):
         self.status_var.set(self.trf("synonyms_ready", word=word))
         if self.synonym_window and self.synonym_window.winfo_exists():
             self.synonym_window.destroy()
@@ -5454,9 +5951,14 @@ class MainView(ttk.Frame):
                 style="Card.TLabel",
                 foreground="#666",
             ).pack(anchor="w", pady=(0, 4))
+        source_key = str(source or "").strip().lower()
+        if source_key == "gemini":
+            source_label = self.tr("synonyms_source_gemini")
+        else:
+            source_label = self.tr("synonyms_source_local")
         ttk.Label(
             wrap,
-            text=self.tr("synonyms_source"),
+            text=self.trf("synonyms_source", source=source_label),
             style="Card.TLabel",
             foreground="#666",
         ).pack(anchor="w", pady=(0, 8))

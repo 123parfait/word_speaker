@@ -9,8 +9,17 @@ from pathlib import Path
 from tkinter import ttk
 
 
+def runtime_base_dir():
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", "")
+        if meipass:
+            return Path(meipass)
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
 def init_runtime_paths():
-    base_dir = Path(__file__).resolve().parent
+    base_dir = runtime_base_dir()
     for vendor_path in (base_dir / "vendor" / "site-packages",):
         path_str = str(vendor_path)
         if vendor_path.exists() and path_str not in sys.path:
@@ -61,7 +70,7 @@ _INSTANCE_GUARD = None
 
 def ensure_single_instance():
     global _INSTANCE_GUARD
-    lock_path = Path(__file__).resolve().parent / "data" / "app.instance.lock"
+    lock_path = runtime_base_dir() / "data" / "app.instance.lock"
     guard = SingleInstanceGuard(lock_path)
     if guard.acquire():
         _INSTANCE_GUARD = guard

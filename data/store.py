@@ -6,6 +6,9 @@ from difflib import SequenceMatcher
 from datetime import datetime
 
 
+DICTATION_META_KEY = "__meta__"
+
+
 class WordStore:
     def __init__(self):
         self.words = []
@@ -246,11 +249,68 @@ class WordStore:
         stats[token] = entry
         self.save_dictation_stats(stats)
 
+    def get_dictation_word_stats(self, word):
+        token = str(word or "").strip()
+        if not token:
+            return {
+                "wrong_count": 0,
+                "correct_count": 0,
+                "last_wrong_input": "",
+                "last_wrong_type": "",
+                "last_result": "",
+                "last_seen": "",
+            }
+        stats = self.load_dictation_stats()
+        entry = stats.get(token)
+        if not isinstance(entry, dict):
+            return {
+                "wrong_count": 0,
+                "correct_count": 0,
+                "last_wrong_input": "",
+                "last_wrong_type": "",
+                "last_result": "",
+                "last_seen": "",
+            }
+        return {
+            "wrong_count": int(entry.get("wrong_count", 0) or 0),
+            "correct_count": int(entry.get("correct_count", 0) or 0),
+            "last_wrong_input": str(entry.get("last_wrong_input") or ""),
+            "last_wrong_type": str(entry.get("last_wrong_type") or ""),
+            "last_result": str(entry.get("last_result") or ""),
+            "last_seen": str(entry.get("last_seen") or ""),
+        }
+
+    def get_last_dictation_accuracy(self):
+        stats = self.load_dictation_stats()
+        meta = stats.get(DICTATION_META_KEY)
+        if not isinstance(meta, dict):
+            return None
+        value = meta.get("last_session_accuracy")
+        try:
+            return float(value)
+        except Exception:
+            return None
+
+    def save_last_dictation_accuracy(self, accuracy):
+        stats = self.load_dictation_stats()
+        meta = stats.get(DICTATION_META_KEY)
+        if not isinstance(meta, dict):
+            meta = {}
+        try:
+            meta["last_session_accuracy"] = float(accuracy)
+        except Exception:
+            meta["last_session_accuracy"] = 0.0
+        meta["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        stats[DICTATION_META_KEY] = meta
+        self.save_dictation_stats(stats)
+
     def recent_wrong_words(self, words=None, limit=50):
         stats = self.load_dictation_stats()
         allowed = {str(word or "").strip() for word in (words or []) if str(word or "").strip()}
         items = []
         for word, entry in stats.items():
+            if str(word).startswith("__"):
+                continue
             if allowed and word not in allowed:
                 continue
             if not isinstance(entry, dict):
