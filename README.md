@@ -50,6 +50,16 @@ Packaged output:
 - `dist/WordSpeaker/WordSpeaker.exe`
 - distribute the whole `dist/WordSpeaker/` folder together
 
+When sharing the packaged build:
+
+- compress and share the whole `dist/WordSpeaker/` folder
+- the other user must fully extract it before running
+- do not run `WordSpeaker.exe` from inside the zip preview window
+- prefer `7-Zip`, `Bandizip`, or `WinRAR` instead of Windows Explorer extraction if possible
+- extract to a short path such as `D:\WS` or `C:\WordSpeaker`
+
+If extraction skips files because of Windows path-length errors, the app may fail at startup with missing `numpy`/DLL errors because required files were not extracted completely.
+
 ## Credits
 
 - Speech synthesis is powered by ElevenLabs, Gemini TTS, and optional local Kokoro / Piper playback

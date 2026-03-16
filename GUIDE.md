@@ -108,7 +108,6 @@
 
 ## Local Runtime Files
 
-- `data/models/kokoro/`: optional offline Kokoro model files
 - `data/models/piper/`: Piper `*.onnx` voice models and matching `*.onnx.json` config files
 - `data/audio_cache/`: generated local audio cache
 - `data/audio_cache/sources/`: source-specific word caches grouped by file and first letter
@@ -138,3 +137,7 @@
 - Existing local corpus and runtime cache files are intentionally ignored by Git
 - The packaged Windows build is intended to ship with local models and WordNet data so end users do not need extra downloads
 - The packaged Windows app is generated at `dist/WordSpeaker/WordSpeaker.exe`; keep the whole `dist/WordSpeaker/` folder when sharing it
+- Do not run the packaged app directly from inside a zip file
+- Fully extract the packaged folder first, ideally with `7-Zip`, `Bandizip`, or `WinRAR`
+- Extract to a short path such as `D:\WS` or `C:\WordSpeaker`
+- If Windows Explorer reports path-length extraction errors, some DLLs may be skipped and the app can fail at startup
