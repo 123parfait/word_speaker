@@ -25,6 +25,7 @@
 - User-selectable playback source: online TTS, local Kokoro, or local Piper
 - Export reusable shared word-audio cache packs as `.zip`
 - Import shared word-audio cache packs from another device to reuse generated TTS
+- Sync an official hosted shared-audio cache manifest and merge only missing/newer shared audio into local `global`
 - Export/import clean word resource packs as `.wspack`
 - Built-in English -> Chinese translation with Argos Translate
 - Built-in part-of-speech tagging with spaCy, cached locally for repeated words
@@ -36,7 +37,7 @@
 - Practice mode for generated passages
 - `Find` can import `.txt` / `.docx` / `.pdf`, build a local sentence index, and search by word or phrase
 - `Tools > Update App` supports online update checks and local update-package import
-- `Tools > Update App > Build Update Package` can zip a packaged app folder and optionally generate an online `manifest.json`
+- Source-only builds expose `Tools > Release Checklist` to show the exact release assets and release order inside the app
 
 ## API Setup
 
@@ -75,6 +76,7 @@
 - `sources` stores lightweight source aliases that point at `global`
 - Current file cache, recent-wrong cache, and other source caches all reuse `global`
 - The app can export `global` as a shareable cache package and import the same package format later
+- `Tools > Sync Official Cache` downloads a hosted shared-cache package and merges it into local `global`
 - Shared-cache packages merge only reusable shared audio entries; they do not overwrite history, user config, or corpus data
 - Each cached word carries metadata for:
   - real backend source
@@ -169,6 +171,8 @@
 - Offline update packages should be zipped from the packaged app folder and must include `version.json`
 - The built-in update-package tool expects the packaged app folder (for example `dist/WordSpeaker/`), not the source repository root
 - Online update manifests are simple JSON files with `version` and `url`; the app downloads the referenced `.zip` and applies it after exit
+- Official shared-audio sync uses the same simple hosted-manifest pattern: a JSON file with `version` and `url` that points at a shared-cache `.zip`
+- In this project, the packaged app reads the default GitHub Release manifest URLs from `version.json`, so normal users do not need to type them manually
 - The updater preserves local cache/config files by skipping known user-data files during replacement
 - Protected local files include audio cache, config, translation cache, POS cache, user dictionary, corpus index, and dictation/history data
 - GitHub Releases can be used as the host for the update `.zip`; the app only needs a reachable `manifest.json`
@@ -177,7 +181,7 @@
   1. update `version.json`
   2. rebuild the packaged app folder, for example `dist/WordSpeaker/`
   3. create a full package zip, for example `WordSpeaker-x.x.x-portable.zip`, from the whole packaged folder
-  4. use `Tools > Update App > Build Update Package` to create `WordSpeaker-update-x.x.x.zip`
+  4. create `WordSpeaker-update-x.x.x.zip` from the packaged app folder
   5. generate `manifest.json` for the update package
   6. upload all 3 files to the same GitHub Release:
      - `WordSpeaker-x.x.x-portable.zip`
@@ -191,6 +195,7 @@
   - if you run the packaged app before zipping it, that folder may accumulate local runtime files under `data/`
   - for clean releases, rebuild first and zip the fresh packaged folder before using it as a real app
   - share reusable word audio with `Export Shared Cache` instead of bundling runtime cache folders into the release package
+  - if you maintain an official shared-audio library, publish a hosted shared-cache `.zip` plus `shared_audio_manifest.json`
   - share curated vocabulary content with `.wspack` resource packs instead of shipping the whole `data/` folder
 - Do not run the packaged app directly from inside a zip file
 - Fully extract the packaged folder first, ideally with `7-Zip`, `Bandizip`, or `WinRAR`

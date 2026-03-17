@@ -12,6 +12,7 @@ from PyInstaller.utils.hooks import (
 
 ROOT = Path(globals().get("SPECPATH", ".")).resolve()
 VENDOR = ROOT / "vendor" / "site-packages"
+ARGOS_PACKAGES = Path.home() / ".local" / "share" / "argos-translate" / "packages"
 
 for path_entry in (str(VENDOR), str(ROOT)):
     if path_entry in sys.path:
@@ -28,6 +29,8 @@ datas = [
     (str(ROOT / "data" / "nltk_data"), "data/nltk_data"),
     (str(ROOT / "version.json"), "."),
 ]
+if ARGOS_PACKAGES.exists():
+    datas.append((str(ARGOS_PACKAGES), "data/argos_packages"))
 binaries = []
 hiddenimports = [
     "docx",
@@ -51,6 +54,15 @@ for package_name in ("argostranslate", "spacy", "spacy_wordnet"):
         datas += collect_data_files(package_name)
     except Exception:
         continue
+
+for package_name in ("en_core_web_sm",):
+    try:
+        pkg_datas, pkg_bins, pkg_hidden = collect_all(package_name)
+    except Exception:
+        continue
+    datas += pkg_datas
+    binaries += pkg_bins
+    hiddenimports += pkg_hidden
 
 try:
     binaries += collect_dynamic_libs("onnxruntime")

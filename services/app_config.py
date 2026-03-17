@@ -13,6 +13,7 @@ _DEFAULT_CONFIG = {
     "gemini_model": "gemini-2.5-flash",
     "ui_language": "zh",
     "update_manifest_url": "",
+    "shared_cache_manifest_url": "",
 }
 
 
@@ -138,4 +139,14 @@ def get_update_manifest_url():
 def set_update_manifest_url(url):
     config = load_config()
     config["update_manifest_url"] = str(url or "").strip()
+    save_config(config)
+
+
+def get_shared_cache_manifest_url():
+    return str(load_config().get("shared_cache_manifest_url") or "").strip()
+
+
+def set_shared_cache_manifest_url(url):
+    config = load_config()
+    config["shared_cache_manifest_url"] = str(url or "").strip()
     save_config(config)

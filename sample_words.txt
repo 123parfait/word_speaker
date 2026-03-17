@@ -4,3 +4,4 @@ computer
 language
 pronunciation
 i am a robot
+stamps

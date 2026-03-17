@@ -84,11 +84,13 @@ def load_version_info(base_dir=None):
             "version": str(data.get("version") or "0.0.0").strip() or "0.0.0",
             "entry_exe": str(data.get("entry_exe") or DEFAULT_ENTRY_EXE).strip() or DEFAULT_ENTRY_EXE,
             "channel_url": str(data.get("channel_url") or "").strip(),
+            "shared_cache_manifest_url": str(data.get("shared_cache_manifest_url") or "").strip(),
         }
     return {
         "version": "0.0.0",
         "entry_exe": DEFAULT_ENTRY_EXE,
         "channel_url": "",
+        "shared_cache_manifest_url": "",
     }
 
 

@@ -2,6 +2,8 @@
 
 Word Speaker is a Windows desktop app for vocabulary study, pronunciation practice, dictation, IELTS-style content generation, and local corpus search.
 
+The project is currently migrating from `Tkinter` to `PySide6`. The default launcher still opens the legacy Tk UI, while the staged Qt UI is available with `python app.py --qt`.
+
 ## Project
 
 - Study from imported `.txt` / `.csv` word lists
@@ -11,6 +13,7 @@ Word Speaker is a Windows desktop app for vocabulary study, pronunciation practi
 - Search imported corpus documents locally
 - Configure separate `LLM API` and `TTS API`
 - Export/import shared word-audio cache packs to reuse generated TTS across devices
+- Sync an official shared-audio cache from a hosted `manifest.json` without overwriting local user cache
 - Export/import clean word resource packs as `.wspack` instead of sharing the whole `data` folder
 - Update the packaged app from `Tools > Update App` via an online manifest or a local update zip
 - Build an update zip and optional online manifest from a packaged app folder
@@ -26,6 +29,18 @@ cd /d path\to\word_speaker
 pip install -r requirements.txt
 python -m spacy download en_core_web_sm
 python app.py
+```
+
+To open the legacy Tk interface during the migration:
+
+```bat
+python app.py --classic
+```
+
+To open the staged PySide6 interface:
+
+```bat
+python app.py --qt
 ```
 
 If your system uses `py`:
@@ -67,6 +82,8 @@ If extraction skips files because of Windows path-length errors, the app may fai
 ## Distribution Notes
 
 - `Tools > Export Shared Cache` creates a reusable audio-cache package for generated word audio only
+- `Tools > Sync Official Cache` downloads a hosted shared-cache zip and merges only missing/newer shared word audio into local `global`
+- source runs expose `Tools > Release Checklist` so packaging steps and required release files are visible inside the app, while actual release artifacts remain a publisher-side workflow
 - `Tools > Export Resource Pack` creates a `.wspack` file containing:
   - word
   - note
@@ -75,6 +92,7 @@ If extraction skips files because of Windows path-length errors, the app may fai
 - `.wspack` is the recommended format for sharing curated vocabulary content
 - do not share the whole `data/` folder between users
 - packaged online updates can use a GitHub Release or any other hosted `.zip`, as long as the app can read a matching `manifest.json`
+- this project now defaults runtime update/sync checks to GitHub Release manifests defined in `version.json`, so end users do not need to type URLs manually
 - users still need one initial packaged build that already contains the updater; after that, they can update from inside the app
 
 ## Credits
@@ -84,3 +102,4 @@ If extraction skips files because of Windows path-length errors, the app may fai
 - Synonym lookup is powered by [spaCy WordNet](https://github.com/argilla-io/spacy-wordnet) and WordNet data
 - Online synonym lookup prefers Gemini and falls back to local spaCy + WordNet
 - English -> Chinese translation is powered by [argosopentech/argos-translate](https://github.com/argosopentech/argos-translate)
+

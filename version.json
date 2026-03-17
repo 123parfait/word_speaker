@@ -1,4 +1,6 @@
 {
-  "version": "0.1.0",
-  "entry_exe": "WordSpeaker.exe"
+  "version": "0.1.1",
+  "entry_exe": "WordSpeaker.exe",
+  "channel_url": "https://github.com/123parfait/word_speaker/releases/latest/download/manifest.json",
+  "shared_cache_manifest_url": "https://github.com/123parfait/word_speaker/releases/latest/download/shared_audio_manifest.json"
 }

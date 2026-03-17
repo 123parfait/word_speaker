@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import json
+import os
 import re
 import threading
 import unicodedata
@@ -13,6 +14,7 @@ _init_error = None
 _prepare_started = False
 _CACHE_PATH = Path(__file__).resolve().parent.parent / "data" / "translation_cache.json"
 _cache_data = None
+_RUNTIME_PATHS_READY = False
 
 _DUPLICATE_BRACKET_PATTERNS = [
     ("(", ")"),
@@ -31,6 +33,42 @@ def _find_lang(langs, prefix):
     return None
 
 
+def _runtime_base_dir():
+    import sys
+
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", "")
+        if meipass:
+            return Path(meipass)
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
+
+
+def _configure_runtime_paths():
+    global _RUNTIME_PATHS_READY
+    if _RUNTIME_PATHS_READY:
+        return
+
+    base_dir = _runtime_base_dir()
+    candidate_dirs = [
+        base_dir / "data" / "argos_packages",
+        base_dir / "vendor" / "argos_packages",
+    ]
+    for candidate in candidate_dirs:
+        if not candidate.exists() or not candidate.is_dir():
+            continue
+        try:
+            entries = [item for item in candidate.iterdir() if item.is_dir()]
+        except Exception:
+            entries = []
+        if not entries:
+            continue
+        os.environ["ARGOS_PACKAGES_DIR"] = str(candidate)
+        break
+
+    _RUNTIME_PATHS_READY = True
+
+
 def _ensure_translation():
     global _translation, _init_error
     with _lock:
@@ -38,6 +76,7 @@ def _ensure_translation():
             return _translation
 
     try:
+        _configure_runtime_paths()
         import argostranslate.package
         import argostranslate.translate
     except Exception as e:

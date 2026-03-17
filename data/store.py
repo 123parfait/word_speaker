@@ -237,6 +237,7 @@ class WordStore:
                 "last_wrong_type": "",
                 "last_result": "",
                 "last_seen": "",
+                "note": "",
             }
         if correct:
             entry["correct_count"] = int(entry.get("correct_count", 0) or 0) + 1
@@ -260,6 +261,7 @@ class WordStore:
                 "last_wrong_type": "",
                 "last_result": "",
                 "last_seen": "",
+                "note": "",
             }
         stats = self.load_dictation_stats()
         entry = stats.get(token)
@@ -271,6 +273,7 @@ class WordStore:
                 "last_wrong_type": "",
                 "last_result": "",
                 "last_seen": "",
+                "note": "",
             }
         return {
             "wrong_count": int(entry.get("wrong_count", 0) or 0),
@@ -279,6 +282,7 @@ class WordStore:
             "last_wrong_type": str(entry.get("last_wrong_type") or ""),
             "last_result": str(entry.get("last_result") or ""),
             "last_seen": str(entry.get("last_seen") or ""),
+            "note": str(entry.get("note") or ""),
         }
 
     def get_last_dictation_accuracy(self):
@@ -328,6 +332,7 @@ class WordStore:
                     "last_wrong_type": str(entry.get("last_wrong_type") or ""),
                     "last_result": str(entry.get("last_result") or ""),
                     "last_seen": str(entry.get("last_seen") or ""),
+                    "note": str(entry.get("note") or ""),
                 }
             )
         items.sort(key=lambda item: (item.get("wrong_count", 0), item.get("last_seen", "")), reverse=True)
@@ -347,6 +352,56 @@ class WordStore:
         entry["last_result"] = "correct"
         entry["last_seen"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         stats[token] = entry
+        self.save_dictation_stats(stats)
+        return True
+
+    def set_recent_wrong_note(self, word, note):
+        token = str(word or "").strip()
+        if not token:
+            return False
+        stats = self.load_dictation_stats()
+        entry = stats.get(token)
+        if not isinstance(entry, dict):
+            entry = {
+                "wrong_count": 0,
+                "correct_count": 0,
+                "last_wrong_input": "",
+                "last_wrong_type": "",
+                "last_result": "",
+                "last_seen": "",
+            }
+        entry["note"] = str(note or "").strip()
+        entry["last_seen"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        stats[token] = entry
+        self.save_dictation_stats(stats)
+        return True
+
+    def rename_recent_wrong_word(self, old_word, new_word):
+        old_token = str(old_word or "").strip()
+        new_token = str(new_word or "").strip()
+        if not old_token or not new_token:
+            return False
+        if old_token == new_token:
+            return True
+        stats = self.load_dictation_stats()
+        source_entry = stats.get(old_token)
+        if not isinstance(source_entry, dict):
+            return False
+        target_entry = stats.get(new_token)
+        if not isinstance(target_entry, dict):
+            target_entry = {}
+        merged = dict(target_entry)
+        merged["wrong_count"] = int(target_entry.get("wrong_count", 0) or 0) + int(source_entry.get("wrong_count", 0) or 0)
+        merged["correct_count"] = int(target_entry.get("correct_count", 0) or 0) + int(source_entry.get("correct_count", 0) or 0)
+        for field in ("last_wrong_input", "last_wrong_type", "last_result", "note"):
+            source_value = str(source_entry.get(field) or "").strip()
+            if source_value:
+                merged[field] = source_value
+            else:
+                merged[field] = str(target_entry.get(field) or "").strip()
+        merged["last_seen"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        stats[new_token] = merged
+        stats.pop(old_token, None)
         self.save_dictation_stats(stats)
         return True
 

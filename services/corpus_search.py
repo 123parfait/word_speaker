@@ -147,10 +147,16 @@ def get_nlp():
     try:
         _NLP = spacy.load("en_core_web_sm")
         return _NLP, _NLP_MODE
-    except Exception as e:
-        raise RuntimeError(
-            "spaCy model 'en_core_web_sm' is missing. Run: python -m spacy download en_core_web_sm"
-        ) from e
+    except Exception as load_error:
+        try:
+            import en_core_web_sm
+
+            _NLP = en_core_web_sm.load()
+            return _NLP, _NLP_MODE
+        except Exception as import_error:
+            raise RuntimeError(
+                "spaCy model 'en_core_web_sm' is missing. Run: python -m spacy download en_core_web_sm"
+            ) from import_error if import_error else load_error
 
 
 def get_nlp_status():
