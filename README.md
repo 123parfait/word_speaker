@@ -97,6 +97,7 @@ When sharing the packaged build:
 - do not run `WordSpeaker.exe` from inside the zip preview window
 - prefer `7-Zip`, `Bandizip`, or `WinRAR` instead of Windows Explorer extraction if possible
 - extract to a short path such as `D:\WS` or `C:\WordSpeaker`
+- before building a new release, clean old files out of `dist/` so stale zips and manifests do not get mixed into the new release set
 
 If extraction skips files because of Windows path-length errors, the app may fail at startup with missing `numpy`/DLL errors because required files were not extracted completely.
 

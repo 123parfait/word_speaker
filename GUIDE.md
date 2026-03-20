@@ -210,11 +210,12 @@
 - Users need one first packaged build that already contains the updater; later versions can then be installed from inside the app
 - Recommended release workflow:
   1. update `version.json`
-  2. rebuild the packaged app folder, for example `dist/WordSpeaker/`
-  3. create a full package zip, for example `WordSpeaker-x.x.x-portable.zip`, from the whole packaged folder
-  4. create `WordSpeaker-update-x.x.x.zip` from the packaged app folder
-  5. generate `manifest.json` for the update package
-  6. upload all 3 files to the same GitHub Release:
+  2. clean old artifacts from `dist/` first so old zips do not mix with the new release
+  3. rebuild the packaged app folder, for example `dist/WordSpeaker/`
+  4. create a full package zip, for example `WordSpeaker-x.x.x-portable.zip`, from the whole packaged folder
+  5. create `WordSpeaker-update-x.x.x.zip` from the packaged app folder
+  6. generate `manifest.json` for the update package
+  7. upload all 3 files to the same GitHub Release:
      - `WordSpeaker-x.x.x-portable.zip`
      - `WordSpeaker-update-x.x.x.zip`
      - `manifest.json`
@@ -226,6 +227,7 @@
   - do not use a packaged folder that you have already been using for daily study as the source for a public release
   - if you run the packaged app before zipping it, that folder may accumulate local runtime files under `data/`
   - for clean releases, rebuild first and zip the fresh packaged folder before using it as a real app
+  - before each release, remove old `WordSpeaker-*.zip`, `manifest.json`, and other stale assets from `dist/`
   - share reusable word audio with `Export Shared Cache` instead of bundling runtime cache folders into the release package
   - if you maintain an official shared-audio library, publish a hosted shared-cache `.zip` plus `shared_audio_manifest.json`
   - share curated vocabulary content with `.wspack` resource packs instead of shipping the whole `data/` folder

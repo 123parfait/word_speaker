@@ -34,8 +34,6 @@ if (ROOT / "speaker.png").exists():
     datas.append((str(ROOT / "speaker.png"), "."))
 if (ROOT / "speaker.ico").exists():
     datas.append((str(ROOT / "speaker.ico"), "."))
-if VENDOR.exists():
-    datas.append((str(VENDOR), "vendor/site-packages"))
 if ARGOS_PACKAGES.exists():
     datas.append((str(ARGOS_PACKAGES), "data/argos_packages"))
 if BUNDLED_CORPUS.exists():
@@ -49,7 +47,21 @@ hiddenimports = [
     "spacy_wordnet.wordnet_annotator",
 ]
 
-for package_name in ("piper", "phonemizer", "espeakng_loader"):
+try:
+    datas += collect_data_files("piper")
+except Exception:
+    pass
+try:
+    binaries += collect_dynamic_libs("piper")
+except Exception:
+    pass
+hiddenimports += [
+    "piper",
+    "phonemizer",
+    "espeakng_loader",
+]
+
+for package_name in ("phonemizer", "espeakng_loader"):
     try:
         pkg_datas, pkg_bins, pkg_hidden = collect_all(package_name)
     except Exception:
@@ -126,6 +138,21 @@ a = Analysis(
         "nltk.chat",
         "onnxruntime.tools",
         "argostranslate.cli",
+        "PySide6",
+        "PySide6.QtCore",
+        "PySide6.QtGui",
+        "PySide6.QtWidgets",
+        "PySide6.QtNetwork",
+        "qt_ui",
+        "qt_ui.main_window",
+        "qt_ui.ui_main_window",
+        "piper.train",
+        "piper.train.__main__",
+        "piper.train.export_generator",
+        "piper.train.export_onnx",
+        "piper.download_voices",
+        "piper.http_server",
+        "piper.patch_voice_with_alignment",
     ],
     noarchive=False,
     optimize=0,
