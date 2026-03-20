@@ -6,6 +6,19 @@ This document records the current Tk UI split so future refactors do not have to
 
 `ui/main_view.py` is no longer the only place that holds UI behavior.
 
+Service-side splits now also include:
+
+- `services/corpus_ingest.py`
+- `services/corpus_index_store.py`
+- `services/runtime_log.py`
+- `services/tts_audio.py`
+- `services/tts_queue.py`
+- `services/tts_backend_strategy.py`
+- `services/tts_persistence.py`
+- `services/tts_shared_cache.py`
+- `services/tts_synth_cache.py`
+- `services/tts_synth_execute.py`
+
 The current split is:
 
 - Controllers
@@ -34,6 +47,17 @@ The current split is:
   - `ui/async_event_helper.py`
   - `ui/find_async.py`
   - `ui/word_tools_async.py`
+- Coordinators
+  - `ui/main_playback_controller.py`
+  - `ui/dictation_session_coordinator.py`
+  - `ui/dictation_window_coordinator.py`
+  - `ui/find_window_coordinator.py`
+  - `ui/word_metadata_coordinator.py`
+  - `ui/word_action_coordinator.py`
+  - `ui/settings_host_coordinator.py`
+  - `ui/main_playback_host.py`
+  - `ui/tool_host_coordinator.py`
+  - `ui/tts_status_bridge.py`
 - Editing helpers
   - `ui/manual_words_editor.py`
 
@@ -54,11 +78,11 @@ Owned by:
 - `ui/word_list_panel.py`
 - `ui/list_presenter.py`
 - `ui/detail_presenter.py`
+- `ui/word_metadata_coordinator.py`
 
 Still in `main_view.py`:
 
-- selection and context menu routing
-- translation / POS async refresh wiring
+- selection routing
 - treeview edit lifecycle
 
 ### Dictation / Recent Wrong
@@ -68,13 +92,14 @@ Owned by:
 - `ui/dictation_controller.py`
 - `ui/recent_wrong_controller.py`
 - `ui/dictation_panel.py`
+- `ui/dictation_session_coordinator.py`
+- `ui/dictation_window_coordinator.py`
 - `ui/list_presenter.py`
 
 Still in `main_view.py`:
 
-- popup sequencing
-- timers
-- playback coordination
+- answer review popup lifecycle
+- volume popup lifecycle
 - a few dictation-only widget state toggles
 
 ### Manual Import
@@ -100,13 +125,13 @@ Owned by:
 - `ui/find_presenter.py`
 - `ui/find_panel.py`
 - `ui/find_async.py`
+- `ui/find_window_coordinator.py`
 - `ui/async_event_helper.py`
 
 Still in `main_view.py`:
 
-- file dialog interaction
-- token lifecycle
-- final UI updates
+- host widget references
+- method forwarding
 
 ### Passage / Sentence / Synonyms
 
@@ -137,44 +162,42 @@ Low-value next steps:
 
 ## Best Next Cuts
 
-### 1. Word Metadata Refresh Coordinator
+### 1. Word List Selection Host Slice
 
 Candidate responsibility:
 
-- translation token lifecycle
-- POS analysis token lifecycle
-- table row refresh after async completion
+- selection change handling
+- double-click play behavior
+- context reset and detail refresh ordering
 
 Why:
 
-- this is still one of the densest cross-cutting parts of `main_view.py`
-- it touches both data refresh and row rendering
+- these actions still sit close to the root host and drive several other domains
 
-### 2. Dictation Session Coordinator
+### 2. Word List Selection Host Slice
 
 Candidate responsibility:
 
-- play / pause / replay / timer flow
-- current item advance
-- input color and feedback reset
+- selection change handling
+- double-click play behavior
+- context reset and detail refresh ordering
 
 Why:
 
-- dictation business state is already mostly out
-- what remains is a cohesive interaction state machine
+- these actions still sit close to the root host and drive several other domains
 
-### 3. Playback Coordinator
+### 3. Store / Learning Data Split
 
 Candidate responsibility:
 
-- main list playback state
-- queue rebuild
-- scheduling next word
-- passage playback pause handoff
+- word list content
+- learning stats
+- recent wrong state
+- history/session persistence
 
 Why:
 
-- it still couples TTS runtime, UI status, and queue state
+- `data/store.py` is now one of the clearest remaining mixed-responsibility modules
 
 ## Safe Working Rule
 

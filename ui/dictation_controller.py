@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import random
 from dataclasses import dataclass
 
 from services.tts import (
@@ -70,12 +71,19 @@ class DictationController:
         self.store.save_last_dictation_accuracy(accuracy)
         return DictationSessionSummary(accuracy=accuracy, total=int(total or 0))
 
-    def build_session_state(self, *, pool, list_mode, session_source_path=None, start_index=0):
+    def build_session_state(self, *, pool, list_mode, session_source_path=None, start_index=0, order_mode="order"):
         words = list(pool or [])
         previous_accuracy = self.store.get_last_dictation_accuracy()
         safe_start = max(0, min(int(start_index or 0), max(0, len(words) - 1)))
-        if safe_start > 0 and words:
-            words = words[safe_start:] + words[:safe_start]
+        normalized_order = str(order_mode or "order").strip().lower()
+        if words:
+            if normalized_order == "random":
+                selected_word = words[safe_start]
+                remaining = words[:safe_start] + words[safe_start + 1 :]
+                random.shuffle(remaining)
+                words = [selected_word] + remaining if safe_start >= 0 else remaining
+            elif safe_start > 0:
+                words = words[safe_start:] + words[:safe_start]
         return DictationSessionState(
             pool=words,
             index=-1,

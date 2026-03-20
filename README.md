@@ -14,6 +14,7 @@ The project is currently migrating from `Tkinter` to `PySide6`. The default laun
   - moves the blue selection highlight as it reads
   - loops back to the first word after the end of the list
 - Practice dictation with wrong-word review
+- Dictation now supports both sequential order and random no-repeat order
 - Generate IELTS-style passages and example sentences
 - Search imported corpus documents locally
 - Configure separate `LLM API` and `TTS API`
@@ -22,10 +23,15 @@ The project is currently migrating from `Tkinter` to `PySide6`. The default laun
   - Chinese translations
   - part-of-speech labels
   - phonetics
-- Sync an official shared-audio cache from a hosted `manifest.json` without overwriting local user cache
+- Sync the official library bundle from the app:
+  - shared audio cache
+  - shared translation / POS / phonetic metadata
+  - official word resource pack
+  - bundled corpus files
 - Export/import clean word resource packs as `.wspack` instead of sharing the whole `data` folder
 - Update the packaged app from `Tools > Update App` via an online manifest or a local update zip
 - Build an update zip and optional online manifest from a packaged app folder
+- The app starts maximized by default and now ships with a bundled app icon (`speaker.ico`)
 
 For the full feature list, TTS/cache behavior, dictation workflow, and runtime file layout, see [GUIDE.md](GUIDE.md).
 
@@ -101,8 +107,11 @@ If extraction skips files because of Windows path-length errors, the app may fai
   - cached translations
   - cached part-of-speech labels
   - cached phonetics
-- `Tools > Sync Official Cache` downloads a hosted shared-cache zip and merges missing/newer shared word audio into local `global`, then applies bundled global metadata
-- source runs expose `Tools > Release Checklist` so packaging steps and required release files are visible inside the app, while actual release artifacts remain a publisher-side workflow
+- `Tools > Update Word Library` syncs the hosted official library bundle:
+  - shared audio cache
+  - shared metadata
+  - official `.wspack`
+  - bundled corpus package
 - `Tools > Export Resource Pack` creates a `.wspack` file containing:
   - word
   - note

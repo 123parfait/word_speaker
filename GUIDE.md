@@ -24,11 +24,14 @@
   - restore the word back to the default audio backend
 - Dictation opens in a dedicated window with `All / Recent Wrong`
 - Dictation supports `Start From Word`, `Start Learning`, and answer review
+- Dictation supports `Sequential` and `Random (No Repeat)` question order
 - The session-end summary now uses the same answer-review layout as the in-session `Answer Review` popup, including accuracy, previous accuracy, buttons, and the comparison table
 - Wrong answers are stored locally, sorted by mistake count, and shown in the recent wrong-word list with error causes
 - In dictation, `Previous` now reopens the last word for editing and rolls back the previous attempt so the old answer does not count
 - Wrong answers in dictation stay visible briefly before the next word instead of disappearing immediately
 - Dictation includes a dedicated volume popup with boost up to `600%`
+- The app starts maximized by default on Windows
+- The project now includes `speaker.png` / `speaker.ico` for runtime and packaged app icons
 - History items can be removed or renamed inside the app, with matching cache updates
 - Indexed corpus documents can be removed from the app without deleting the original files on disk
 - Separate `LLM API` and `TTS API` settings
@@ -53,8 +56,6 @@
 - Practice mode for generated passages
 - `Find` can import `.txt` / `.docx` / `.pdf`, build a local sentence index, and search by word or phrase
 - `Tools > Update App` supports online update checks and local update-package import
-- Source-only builds expose `Tools > Release Checklist` to show the exact release assets and release order inside the app
-
 ## API Setup
 
 - `LLM API` is currently Gemini-only
@@ -92,7 +93,11 @@
 - `sources` stores lightweight source aliases that point at `global`
 - Current file cache, recent-wrong cache, and other source caches all reuse `global`
 - The app can export `global` as a shareable cache package and import the same package format later
-- `Tools > Sync Official Cache` downloads a hosted shared-cache package and merges it into local `global`
+- `Tools > Update Word Library` downloads the hosted official library bundle and applies:
+  - shared cache audio
+  - shared metadata
+  - official `.wspack`
+  - bundled corpus package
 - Shared-cache packages now also include:
   - `translation_cache`
   - `pos_cache`

@@ -24,6 +24,7 @@ data/word_audio_overrides.json
 data/nltk_data/
 data/audio_cache/
 data/app.instance.lock
+data/runtime.log
 data/argos_packages/
 data/bundled_corpus/
 .*.wordspeaker_audio/

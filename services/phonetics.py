@@ -7,12 +7,14 @@ import urllib.request
 from pathlib import Path
 
 from services.app_config import get_generation_model, get_llm_api_key
+from services.metadata_repository import JsonMetadataRepository
 
 
 _CACHE_PATH = Path(__file__).resolve().parent.parent / "data" / "phonetics_cache.json"
 _GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
 _lock = threading.Lock()
 _cache_data = None
+_repo = None
 
 
 def _normalize_key(text):
@@ -64,67 +66,32 @@ def _extract_json_object(text):
 
 def _load_cache_locked():
     global _cache_data
-    if _cache_data is not None:
-        return _cache_data
-    if not _CACHE_PATH.exists():
-        _cache_data = {}
-        return _cache_data
-    try:
-        with open(_CACHE_PATH, "r", encoding="utf-8") as fp:
-            data = json.load(fp)
-        _cache_data = data if isinstance(data, dict) else {}
-    except Exception:
-        _cache_data = {}
-    cleaned = {}
-    changed = False
-    for key, value in list((_cache_data or {}).items()):
-        clean_key = _normalize_key(key)
-        clean_value = _normalize_phonetic(value)
-        if not clean_key or not clean_value:
-            changed = True
-            continue
-        cleaned[clean_key] = clean_value
-        if key != clean_key or str(value or "") != clean_value:
-            changed = True
-    _cache_data = cleaned
-    if changed:
-        _save_cache_locked()
+    _cache_data = _get_repo().cleanup()
     return _cache_data
 
 
 def _save_cache_locked():
-    _CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(_CACHE_PATH, "w", encoding="utf-8") as fp:
-        json.dump(_cache_data or {}, fp, ensure_ascii=False, indent=2)
+    global _cache_data
+    _cache_data = _get_repo().export_payload()
+
+
+def _get_repo():
+    global _repo
+    if _repo is None:
+        _repo = JsonMetadataRepository(
+            _CACHE_PATH,
+            key_normalizer=_normalize_key,
+            value_normalizer=_normalize_phonetic,
+        )
+    return _repo
 
 
 def get_cached_phonetics(words):
-    result = {}
-    with _lock:
-        cache = _load_cache_locked()
-        for word in words or []:
-            key = _normalize_key(word)
-            if key and key in cache:
-                result[word] = _normalize_phonetic(cache.get(key) or "")
-    return result
+    return _get_repo().get_many(words)
 
 
 def _update_cache(pairs):
-    changed = False
-    with _lock:
-        cache = _load_cache_locked()
-        for word, phonetic in (pairs or {}).items():
-            key = _normalize_key(word)
-            value = _normalize_phonetic(phonetic)
-            if not key or not value:
-                continue
-            if cache.get(key) == value:
-                continue
-            cache[key] = value
-            changed = True
-        if changed:
-            _save_cache_locked()
-    return changed
+    return bool(_get_repo().apply_many(pairs))
 
 
 def set_cached_phonetic(word, phonetic):
@@ -132,32 +99,12 @@ def set_cached_phonetic(word, phonetic):
     if not key:
         return False
     value = _normalize_phonetic(phonetic)
-    with _lock:
-        cache = _load_cache_locked()
-        changed = False
-        if value:
-            if cache.get(key) != value:
-                cache[key] = value
-                changed = True
-        elif key in cache:
-            cache.pop(key, None)
-            changed = True
-        if changed:
-            _save_cache_locked()
+    _get_repo().set_one(word, value)
     return True
 
 
 def apply_cached_phonetics(pairs):
-    normalized = {}
-    for word, phonetic in dict(pairs or {}).items():
-        key = _normalize_key(word)
-        value = _normalize_phonetic(phonetic)
-        if key and value:
-            normalized[key] = value
-    if not normalized:
-        return 0
-    _update_cache(normalized)
-    return len(normalized)
+    return _get_repo().apply_many(pairs)
 
 
 def _request_gemini_phonetic_map(words, timeout=35):

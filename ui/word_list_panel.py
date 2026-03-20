@@ -13,16 +13,20 @@ def build_main_shell(host):
 
     host.main = ttk.Frame(host)
     host.main.pack(fill="both", expand=True)
-    host.main.grid_columnconfigure(0, weight=5)
-    host.main.grid_columnconfigure(2, weight=4)
+    host.main.grid_columnconfigure(0, weight=5, minsize=680)
+    host.main.grid_columnconfigure(2, weight=4, minsize=420)
     host.main.grid_rowconfigure(0, weight=1)
 
     host.left = ttk.Frame(host.main, style="Card.TFrame")
+    host.left.configure(width=760)
     host.left.grid(row=0, column=0, sticky="nsew")
+    host.left.grid_propagate(False)
     host.mid_sep = ttk.Separator(host.main, orient="vertical")
     host.mid_sep.grid(row=0, column=1, sticky="ns", padx=10)
     host.right = ttk.Frame(host.main, style="Card.TFrame")
+    host.right.configure(width=420)
     host.right.grid(row=0, column=2, sticky="nsew")
+    host.right.grid_propagate(False)
 
 
 def build_word_list_panel(host, tooltip_cls):
@@ -75,8 +79,8 @@ def build_word_list_panel(host, tooltip_cls):
     host.word_table.heading("word", text=host.tr("word"))
     host.word_table.heading("note", text=host.tr("notes"))
     host.word_table.column("idx", width=70, anchor="center", stretch=False)
-    host.word_table.column("word", width=500, anchor="w")
-    host.word_table.column("note", width=240, anchor="w")
+    host.word_table.column("word", width=360, anchor="w", stretch=False)
+    host.word_table.column("note", width=380, anchor="w", stretch=True)
 
     host.word_table_scroll = ttk.Scrollbar(table_wrap, orient="vertical", command=host.word_table.yview)
     host.word_table.configure(yscrollcommand=host.word_table_scroll.set)
@@ -155,6 +159,11 @@ def build_word_list_panel(host, tooltip_cls):
     tooltip_cls(host.dictation_btn, "Open Dictation Window")
 
     host.status_label = ttk.Label(
-        host.left, textvariable=host.status_var, style="Card.TLabel", foreground="#444"
+        host.left,
+        textvariable=host.status_var,
+        style="Card.TLabel",
+        foreground="#444",
+        wraplength=620,
+        justify="left",
     )
-    host.status_label.grid(row=6, column=0, columnspan=2, padx=12, pady=(0, 12), sticky="w")
+    host.status_label.grid(row=6, column=0, columnspan=2, padx=12, pady=(0, 12), sticky="ew")

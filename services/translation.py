@@ -8,6 +8,7 @@ import urllib.request
 import unicodedata
 from pathlib import Path
 
+from services.metadata_repository import JsonMetadataRepository
 from services.app_config import get_generation_model, get_llm_api_key
 from services.user_dictionary import get_entries as get_user_dictionary_entries, set_entry as set_user_dictionary_entry
 
@@ -26,6 +27,8 @@ _DUPLICATE_BRACKET_PATTERNS = [
     ("[", "]"),
     ("【", "】"),
 ]
+
+_repo = None
 
 
 def _find_lang(langs, prefix):
@@ -176,6 +179,17 @@ def _normalize_translation_text(text):
     return value.strip()
 
 
+def _get_repo():
+    global _repo
+    if _repo is None:
+        _repo = JsonMetadataRepository(
+            _CACHE_PATH,
+            key_normalizer=_normalize_cache_key,
+            value_normalizer=_normalize_translation_text,
+        )
+    return _repo
+
+
 def _strip_code_fence(text):
     raw = str(text or "").strip()
     if raw.startswith("```"):
@@ -280,43 +294,13 @@ def _request_gemini_translation_map(words, timeout=35):
 
 def _load_cache_locked():
     global _cache_data
-    if _cache_data is not None:
-        return _cache_data
-    if not _CACHE_PATH.exists():
-        _cache_data = {}
-        return _cache_data
-    try:
-        with open(_CACHE_PATH, "r", encoding="utf-8") as fp:
-            data = json.load(fp)
-        _cache_data = data if isinstance(data, dict) else {}
-    except Exception:
-        _cache_data = {}
-    if not isinstance(_cache_data, dict):
-        _cache_data = {}
-    cleaned = {}
-    changed = False
-    for key, value in list(_cache_data.items()):
-        clean_key = _normalize_cache_key(key)
-        clean_value = _normalize_translation_text(value)
-        if not clean_key or not clean_value:
-            changed = True
-            continue
-        if clean_key in cleaned and cleaned[clean_key] == clean_value:
-            changed = True
-            continue
-        cleaned[clean_key] = clean_value
-        if key != clean_key or str(value or "") != clean_value:
-            changed = True
-    _cache_data = cleaned
-    if changed:
-        _save_cache_locked()
+    _cache_data = _get_repo().cleanup()
     return _cache_data
 
 
 def _save_cache_locked():
-    _CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(_CACHE_PATH, "w", encoding="utf-8") as fp:
-        json.dump(_cache_data or {}, fp, ensure_ascii=False, indent=2)
+    global _cache_data
+    _cache_data = _get_repo().export_payload()
 
 
 def get_cached_translations(words):
@@ -326,46 +310,21 @@ def get_cached_translations(words):
         value = _normalize_translation_text((payload or {}).get("translation"))
         if value:
             result[word] = value
-    with _lock:
-        cache = _load_cache_locked()
-        for word in words:
-            if word in result:
-                continue
-            key = _normalize_cache_key(word)
-            if key in cache:
-                result[word] = _normalize_translation_text(cache.get(key) or "")
+    cache_result = _get_repo().get_many(words)
+    for word in words:
+        if word in result:
+            continue
+        if word in cache_result:
+            result[word] = cache_result[word]
     return result
 
 
 def _update_translation_cache(pairs):
-    changed = False
-    with _lock:
-        cache = _load_cache_locked()
-        for word, zh_text in pairs.items():
-            key = _normalize_cache_key(word)
-            value = _normalize_translation_text(zh_text)
-            if not key or not value:
-                continue
-            if cache.get(key) == value:
-                continue
-            cache[key] = value
-            changed = True
-        if changed:
-            _save_cache_locked()
-    return changed
+    return bool(_get_repo().apply_many(pairs))
 
 
 def apply_cached_translations(pairs):
-    normalized = {}
-    for word, zh_text in dict(pairs or {}).items():
-        key = str(word or "").strip()
-        value = _normalize_translation_text(zh_text)
-        if key and value:
-            normalized[key] = value
-    if not normalized:
-        return 0
-    _update_translation_cache(normalized)
-    return len(normalized)
+    return _get_repo().apply_many(pairs)
 
 
 def set_cached_translation(word, zh_text):
@@ -374,18 +333,7 @@ def set_cached_translation(word, zh_text):
         return False
     value = _normalize_translation_text(zh_text)
     set_user_dictionary_entry(word, translation=value if value else "", pos=None)
-    with _lock:
-        cache = _load_cache_locked()
-        changed = False
-        if value:
-            if cache.get(key) != value:
-                cache[key] = value
-                changed = True
-        elif key in cache:
-            cache.pop(key, None)
-            changed = True
-        if changed:
-            _save_cache_locked()
+    _get_repo().set_one(word, value)
     return True
 
 

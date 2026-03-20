@@ -30,6 +30,10 @@ datas = [
     (str(ROOT / "data" / "nltk_data"), "data/nltk_data"),
     (str(ROOT / "version.json"), "."),
 ]
+if (ROOT / "speaker.png").exists():
+    datas.append((str(ROOT / "speaker.png"), "."))
+if (ROOT / "speaker.ico").exists():
+    datas.append((str(ROOT / "speaker.ico"), "."))
 if VENDOR.exists():
     datas.append((str(VENDOR), "vendor/site-packages"))
 if ARGOS_PACKAGES.exists():
@@ -134,6 +138,7 @@ exe = EXE(
     [],
     exclude_binaries=True,
     name="WordSpeaker",
+    icon=str(ROOT / "speaker.ico") if (ROOT / "speaker.ico").exists() else None,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

@@ -157,10 +157,37 @@ def run_classic_ui():
             relief="flat",
         )
 
+    def apply_app_icon(root):
+        try:
+            ico_path = runtime_base_dir() / "speaker.ico"
+            if ico_path.exists():
+                root.iconbitmap(str(ico_path))
+        except Exception:
+            pass
+        icon_path = runtime_base_dir() / "speaker.png"
+        if not icon_path.exists():
+            return
+        try:
+            icon_image = tk.PhotoImage(file=str(icon_path))
+            root.iconphoto(True, icon_image)
+            root._app_icon_image = icon_image
+        except Exception:
+            pass
+
     root = tk.Tk()
     root.title("Word Speaker")
     root.geometry("1480x860")
     root.minsize(1320, 760)
+    try:
+        root.state("zoomed")
+    except Exception:
+        try:
+            screen_w = int(root.winfo_screenwidth() or 1480)
+            screen_h = int(root.winfo_screenheight() or 860)
+            root.geometry(f"{screen_w}x{screen_h}+0+0")
+        except Exception:
+            pass
+    apply_app_icon(root)
     init_style(root)
     MainView(root).pack(fill="both", expand=True, padx=20, pady=20)
     root.mainloop()
