@@ -8,11 +8,20 @@ The project is currently migrating from `Tkinter` to `PySide6`. The default laun
 
 - Study from imported `.txt` / `.csv` word lists
 - Play word audio with online TTS or local TTS
+- Main `Play` now works as a simple sequential loop over the current word list:
+  - starts from the currently selected word if one is selected
+  - otherwise starts from the first word
+  - moves the blue selection highlight as it reads
+  - loops back to the first word after the end of the list
 - Practice dictation with wrong-word review
 - Generate IELTS-style passages and example sentences
 - Search imported corpus documents locally
 - Configure separate `LLM API` and `TTS API`
 - Export/import shared word-audio cache packs to reuse generated TTS across devices
+- Shared-cache packages can now carry global vocabulary metadata together with shared audio:
+  - Chinese translations
+  - part-of-speech labels
+  - phonetics
 - Sync an official shared-audio cache from a hosted `manifest.json` without overwriting local user cache
 - Export/import clean word resource packs as `.wspack` instead of sharing the whole `data` folder
 - Update the packaged app from `Tools > Update App` via an online manifest or a local update zip
@@ -62,6 +71,12 @@ Current API support:
 - `LLM API`: Gemini
 - `TTS API`: ElevenLabs, Gemini
 
+Current metadata behavior:
+
+- English -> Chinese translation prefers local `Argos Translate` and falls back to `Gemini`
+- UK phonetics are generated through `Gemini` and cached locally
+- part-of-speech, translation, and phonetics are refreshed together and can be distributed through shared-cache packages
+
 Windows packaging is also supported. The packaged app includes local models and WordNet data so end users do not need to download extra runtime assets separately.
 
 Packaged output:
@@ -81,14 +96,19 @@ If extraction skips files because of Windows path-length errors, the app may fai
 
 ## Distribution Notes
 
-- `Tools > Export Shared Cache` creates a reusable audio-cache package for generated word audio only
-- `Tools > Sync Official Cache` downloads a hosted shared-cache zip and merges only missing/newer shared word audio into local `global`
+- `Tools > Export Shared Cache` creates a reusable shared package for:
+  - generated shared word audio
+  - cached translations
+  - cached part-of-speech labels
+  - cached phonetics
+- `Tools > Sync Official Cache` downloads a hosted shared-cache zip and merges missing/newer shared word audio into local `global`, then applies bundled global metadata
 - source runs expose `Tools > Release Checklist` so packaging steps and required release files are visible inside the app, while actual release artifacts remain a publisher-side workflow
 - `Tools > Export Resource Pack` creates a `.wspack` file containing:
   - word
   - note
   - manually corrected part of speech
   - manually corrected Chinese translation
+  - phonetic
 - `.wspack` is the recommended format for sharing curated vocabulary content
 - do not share the whole `data/` folder between users
 - packaged online updates can use a GitHub Release or any other hosted `.zip`, as long as the app can read a matching `manifest.json`

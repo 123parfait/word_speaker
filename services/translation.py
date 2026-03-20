@@ -3,9 +3,12 @@ import json
 import os
 import re
 import threading
+import urllib.error
+import urllib.request
 import unicodedata
 from pathlib import Path
 
+from services.app_config import get_generation_model, get_llm_api_key
 from services.user_dictionary import get_entries as get_user_dictionary_entries, set_entry as set_user_dictionary_entry
 
 _lock = threading.Lock()
@@ -15,6 +18,7 @@ _prepare_started = False
 _CACHE_PATH = Path(__file__).resolve().parent.parent / "data" / "translation_cache.json"
 _cache_data = None
 _RUNTIME_PATHS_READY = False
+_GEMINI_TRANSLATION_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
 
 _DUPLICATE_BRACKET_PATTERNS = [
     ("(", ")"),
@@ -172,6 +176,108 @@ def _normalize_translation_text(text):
     return value.strip()
 
 
+def _strip_code_fence(text):
+    raw = str(text or "").strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw)
+    return raw.strip()
+
+
+def _extract_json_object(text):
+    raw = _strip_code_fence(text)
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        pass
+    match = re.search(r"\{[\s\S]*\}", raw)
+    if not match:
+        return {}
+    try:
+        data = json.loads(match.group(0))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _request_gemini_translation_map(words, timeout=35):
+    api_key = str(get_llm_api_key() or "").strip()
+    if not api_key:
+        raise RuntimeError("Gemini API key is empty.")
+    requested_words = [str(word or "").strip() for word in words if str(word or "").strip()]
+    if not requested_words:
+        return {}
+
+    prompt = (
+        "Translate the following English words or short phrases into concise Simplified Chinese.\n"
+        "Rules:\n"
+        "- Return JSON only.\n"
+        "- Keep every input string exactly as the JSON key.\n"
+        "- Each value must be concise Simplified Chinese.\n"
+        "- Do not include pinyin, explanations, examples, or part of speech.\n"
+        "- If a term cannot be translated reliably, use an empty string.\n\n"
+        f"Input terms:\n{json.dumps(requested_words, ensure_ascii=False)}"
+    )
+    payload = {
+        "model": str(get_generation_model() or "gemini-2.5-flash").strip(),
+        "messages": [
+            {
+                "role": "system",
+                "content": "You are a bilingual English-Chinese dictionary assistant. Output valid JSON only.",
+            },
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.1,
+        "max_tokens": max(256, 48 * len(requested_words)),
+    }
+    req = urllib.request.Request(
+        _GEMINI_TRANSLATION_URL,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            data = json.loads(response.read().decode("utf-8", errors="ignore"))
+    except urllib.error.HTTPError as e:
+        try:
+            raw = e.read().decode("utf-8", errors="ignore")
+        except Exception:
+            raw = str(e)
+        raise RuntimeError(raw or str(e)) from e
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"Gemini request failed: {e.reason}") from e
+    except Exception as e:
+        raise RuntimeError(f"Gemini request failed: {e}") from e
+
+    choices = data.get("choices") or []
+    if not choices:
+        raise RuntimeError("Gemini returned no choices.")
+    message = (choices[0] or {}).get("message") or {}
+    content = message.get("content")
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict):
+                piece = item.get("text") or ""
+                if piece:
+                    parts.append(str(piece))
+        content = "".join(parts)
+    mapping = _extract_json_object(content)
+    result = {}
+    for word in requested_words:
+        translated = _normalize_translation_text(mapping.get(word) or "")
+        if translated:
+            result[word] = translated
+    return result
+
+
 def _load_cache_locked():
     global _cache_data
     if _cache_data is not None:
@@ -249,6 +355,19 @@ def _update_translation_cache(pairs):
     return changed
 
 
+def apply_cached_translations(pairs):
+    normalized = {}
+    for word, zh_text in dict(pairs or {}).items():
+        key = str(word or "").strip()
+        value = _normalize_translation_text(zh_text)
+        if key and value:
+            normalized[key] = value
+    if not normalized:
+        return 0
+    _update_translation_cache(normalized)
+    return len(normalized)
+
+
 def set_cached_translation(word, zh_text):
     key = _normalize_cache_key(word)
     if not key:
@@ -307,13 +426,29 @@ def translate_words(words):
         missing.append(w)
 
     new_pairs = {}
+    still_missing = []
     for w in missing:
         try:
             translated = translate_text(w)
         except Exception:
             translated = ""
+        translated = _normalize_translation_text(translated)
         result[w] = translated
         if translated:
+            new_pairs[w] = translated
+        else:
+            still_missing.append(w)
+
+    if still_missing:
+        try:
+            gemini_pairs = _request_gemini_translation_map(still_missing)
+        except Exception:
+            gemini_pairs = {}
+        for w in still_missing:
+            translated = _normalize_translation_text(gemini_pairs.get(w) or "")
+            if not translated:
+                continue
+            result[w] = translated
             new_pairs[w] = translated
     if new_pairs:
         _update_translation_cache(new_pairs)

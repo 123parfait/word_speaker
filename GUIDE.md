@@ -11,13 +11,24 @@
 - Manual pasted lists support `Save As`
 - Unsaved manual lists trigger a save prompt before closing
 - `New List` creates a blank list for building a new vocabulary file
-- Play in order, random (no repeat), or click-to-play
+- Main `Play` is now a single sequential loop mode
+- If a word is selected, `Play` starts from that word
+- If nothing is selected, `Play` starts from the first word
+- Playback moves the visible blue selection highlight as it reads
+- After the last word, playback loops back to the first word automatically
 - Single-click and double-click both play pronunciation
 - Right-click a word for edit, corpus search, sentence generation, synonyms, and cached-audio inspection
+- Right-click also supports:
+  - add word
+  - replace this word's audio with Piper
+  - restore the word back to the default audio backend
 - Dictation opens in a dedicated window with `All / Recent Wrong`
-- Dictation supports `Start From Word`, `Start Learning`, manual wrong-word addition, and answer review
+- Dictation supports `Start From Word`, `Start Learning`, and answer review
 - The session-end summary now uses the same answer-review layout as the in-session `Answer Review` popup, including accuracy, previous accuracy, buttons, and the comparison table
 - Wrong answers are stored locally, sorted by mistake count, and shown in the recent wrong-word list with error causes
+- In dictation, `Previous` now reopens the last word for editing and rolls back the previous attempt so the old answer does not count
+- Wrong answers in dictation stay visible briefly before the next word instead of disappearing immediately
+- Dictation includes a dedicated volume popup with boost up to `600%`
 - History items can be removed or renamed inside the app, with matching cache updates
 - Indexed corpus documents can be removed from the app without deleting the original files on disk
 - Separate `LLM API` and `TTS API` settings
@@ -25,10 +36,15 @@
 - User-selectable playback source: online TTS, local Kokoro, or local Piper
 - Export reusable shared word-audio cache packs as `.zip`
 - Import shared word-audio cache packs from another device to reuse generated TTS
+- Shared-cache packages now also carry global cached metadata:
+  - translation
+  - POS
+  - phonetics
 - Sync an official hosted shared-audio cache manifest and merge only missing/newer shared audio into local `global`
 - Export/import clean word resource packs as `.wspack`
 - Built-in English -> Chinese translation with Argos Translate
 - Built-in part-of-speech tagging with spaCy, cached locally for repeated words
+- Built-in UK phonetics with Gemini, cached locally for repeated words
 - Part of speech and Chinese translation can be edited by the user and stored locally
 - Manual corrections are stored in a separate user dictionary so they can override bad cached results
 - Synonym lookup prefers Gemini and falls back to local spaCy + WordNet
@@ -77,7 +93,11 @@
 - Current file cache, recent-wrong cache, and other source caches all reuse `global`
 - The app can export `global` as a shareable cache package and import the same package format later
 - `Tools > Sync Official Cache` downloads a hosted shared-cache package and merges it into local `global`
-- Shared-cache packages merge only reusable shared audio entries; they do not overwrite history, user config, or corpus data
+- Shared-cache packages now also include:
+  - `translation_cache`
+  - `pos_cache`
+  - `phonetics_cache`
+- Shared-cache packages still do not overwrite history, user config, or corpus data
 - Each cached word carries metadata for:
   - real backend source
   - desired backend target
@@ -99,6 +119,7 @@
   - note
   - manual Chinese translation override
   - manual part-of-speech override
+  - phonetic
 - Resource packs do not include:
   - audio cache
   - API keys
@@ -116,9 +137,10 @@
 - `Start From Word` opens an in-window picker so you can jump into dictation from any word in the current list mode
 - `Start Learning` opens the study-mode popup; the first implemented mode is `Online Spelling`
 - `Online Spelling` supports playback speed presets, countdown timing, replay, pause, previous-word, and live red/green answer feedback
+- `Online Spelling` previous-word rollback removes the previous session attempt before you re-answer
 - Wrong answers are recorded locally and feed back into the `Recent Wrong` list
 - `Recent Wrong` is global, not limited to the currently opened file
-- `Recent Wrong` shows error cause instead of normal notes, sorts by mistake count, and supports manual additions
+- `Recent Wrong` shows error cause instead of normal notes and sorts by mistake count
 - Correct answers in recent-wrong study can remove the word from the recent-wrong list and clean up the matching recent-wrong alias cache
 - The answer-review popup shows:
   - accuracy so far
@@ -131,6 +153,9 @@
 - Open the `Find` window from the main UI
 - Import `.txt` / `.docx` / `.pdf`
 - The app builds a local sentence index in `data/corpus_index.db`
+- During import, the `Import Docs` button is disabled to avoid duplicate clicks
+- Import status now shows the first file name so users can tell the task is running
+- Import completion now shows an explicit result dialog instead of only refreshing the list silently
 - Search by word or phrase
 - Filter by the selected document, or search across the full corpus
 
@@ -146,6 +171,7 @@
 - `data/app.instance.lock`: single-instance guard for the desktop app
 - `data/pos_cache.json`: cached part-of-speech labels
 - `data/translation_cache.json`: cached translations
+- `data/phonetics_cache.json`: cached phonetics
 - `data/user_dictionary.json`: manual translation / POS overrides that take priority over cached automatic results
 - `data/synonyms_cache.json`: cached synonym results
 - `data/dictation_stats.json`: wrong-word and dictation statistics
@@ -189,7 +215,8 @@
      - `manifest.json`
 - Packaging defaults:
   - the packaged app includes built-in models, WordNet data, and `version.json`
-  - the packaged app does not include your local `audio_cache`, translation cache, POS cache, user dictionary, or dictation history by default
+- the packaged app does not include your local `audio_cache`, translation cache, POS cache, user dictionary, or dictation history by default
+- the packaged app also does not include your local phonetics cache, bundled-corpus state, or per-word audio override state by default
 - Release hygiene:
   - do not use a packaged folder that you have already been using for daily study as the source for a public release
   - if you run the packaged app before zipping it, that folder may accumulate local runtime files under `data/`

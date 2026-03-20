@@ -151,3 +151,25 @@ def set_cached_pos(word, pos_label):
         if changed:
             _save_cache_locked()
     return True
+
+
+def apply_cached_pos(pairs):
+    normalized = {}
+    for word, pos_label in dict(pairs or {}).items():
+        key = _normalize_key(word)
+        value = str(pos_label or "").strip()
+        if key and value:
+            normalized[key] = value
+    if not normalized:
+        return 0
+    with _lock:
+        cache = _load_cache_locked()
+        changed = False
+        for key, value in normalized.items():
+            if cache.get(key) == value:
+                continue
+            cache[key] = value
+            changed = True
+        if changed:
+            _save_cache_locked()
+    return len(normalized)

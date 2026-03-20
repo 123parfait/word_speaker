@@ -251,6 +251,28 @@ class WordStore:
         stats[token] = entry
         self.save_dictation_stats(stats)
 
+    def snapshot_dictation_word_stats(self, word):
+        token = str(word or "").strip()
+        if not token:
+            return None
+        stats = self.load_dictation_stats()
+        entry = stats.get(token)
+        if not isinstance(entry, dict):
+            return None
+        return dict(entry)
+
+    def restore_dictation_word_stats(self, word, snapshot):
+        token = str(word or "").strip()
+        if not token:
+            return False
+        stats = self.load_dictation_stats()
+        if isinstance(snapshot, dict):
+            stats[token] = dict(snapshot)
+        else:
+            stats.pop(token, None)
+        self.save_dictation_stats(stats)
+        return True
+
     def get_dictation_word_stats(self, word):
         token = str(word or "").strip()
         if not token:

@@ -18,6 +18,7 @@ import numpy as np
 from tkinter import messagebox
 
 from services.app_config import get_llm_api_key, get_tts_api_key, get_tts_api_provider
+from services.shared_metadata import export_shared_metadata_payload, import_shared_metadata_payload
 from services.text_normalization import normalize_ielts_tts_text
 from services.voice_catalog import (
     get_kokoro_paths,
@@ -37,11 +38,13 @@ SHARED_WORD_CACHE_DIR = os.path.join(AUDIO_CACHE_ROOT_DIR, "global")
 SOURCE_WORD_CACHE_ROOT_DIR = os.path.join(AUDIO_CACHE_ROOT_DIR, "sources")
 PENDING_ONLINE_TTS_QUEUE_PATH = os.path.join(BASE_DIR, "data", "audio_cache", "pending_online_tts_replacements.json")
 LEGACY_PENDING_GEMINI_QUEUE_PATH = os.path.join(BASE_DIR, "data", "audio_cache", "pending_gemini_replacements.json")
+WORD_AUDIO_OVERRIDE_PATH = os.path.join(BASE_DIR, "data", "word_audio_overrides.json")
 RECENT_WRONG_SOURCE_KEY = "__recent_wrong_words__"
 MANUAL_SESSION_SOURCE_KEY = "__manual_session__"
 KOKORO_SAMPLE_RATE = 24000
-SHARED_CACHE_PACKAGE_VERSION = 1
+SHARED_CACHE_PACKAGE_VERSION = 2
 SHARED_CACHE_PACKAGE_MANIFEST = "manifest.json"
+SHARED_CACHE_METADATA_FILE = "global/metadata.json"
 
 _lock = threading.Lock()
 _token = 0
@@ -61,6 +64,8 @@ _manual_session_cache_paths = set()
 _manual_session_cache_lock = threading.Lock()
 _cache_metadata_memory = {}
 _cache_metadata_lock = threading.Lock()
+_word_audio_override_lock = threading.Lock()
+_word_audio_override_memory = None
 _gemini_queue_status_lock = threading.Lock()
 _gemini_queue_status = {
     "state": "idle",
@@ -586,6 +591,59 @@ def _selected_source_backend_key():
     return _backend_key(source=get_voice_source())
 
 
+def get_word_backend_override(text, source_path=None):
+    key = _word_audio_override_key(text, source_path=source_path)
+    if not key:
+        return ""
+    return str(_load_word_audio_overrides().get(key) or "").strip().lower()
+
+
+def set_word_backend_override(text, source_path=None, backend=None):
+    key = _word_audio_override_key(text, source_path=source_path)
+    backend_key = str(backend or "").strip().lower()
+    if not key or backend_key not in {"gemini", "elevenlabs", "kokoro", "piper"}:
+        return False
+    payload = _load_word_audio_overrides()
+    payload[key] = backend_key
+    _save_word_audio_overrides(payload)
+    return True
+
+
+def clear_word_backend_override(text, source_path=None):
+    key = _word_audio_override_key(text, source_path=source_path)
+    if not key:
+        return False
+    payload = _load_word_audio_overrides()
+    existed = key in payload
+    if existed:
+        payload.pop(key, None)
+        _save_word_audio_overrides(payload)
+    cache_path = _word_cache_path(text, source_path=source_path)
+    metadata = _load_cache_metadata(cache_path)
+    backend = str(metadata.get("backend") or "").strip().lower()
+    if backend in {"piper", "kokoro"}:
+        playable_path = _resolve_cache_audio_path(cache_path)
+        for path in {str(cache_path or "").strip(), str(playable_path or "").strip(), _cache_meta_path(cache_path)}:
+            if not path:
+                continue
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except Exception:
+                pass
+        _remove_cache_metadata(cache_path)
+        return True
+    return existed
+
+
+def _selected_word_backend_key(text, *, source_path=None, short_text=False):
+    if short_text:
+        override_backend = get_word_backend_override(text, source_path=source_path)
+        if override_backend in {"gemini", "elevenlabs", "kokoro", "piper"}:
+            return override_backend
+    return _selected_source_backend_key()
+
+
 def _actual_backend_key_for_result(*, fallback=False):
     selected = _selected_source_backend_key()
     if _is_online_backend(selected) and fallback:
@@ -604,6 +662,42 @@ def _load_json_file(path, default):
     except Exception:
         pass
     return default
+
+
+def _word_audio_override_key(text, source_path=None):
+    normalized_text = _normalize_text(text, ensure_sentence_end=False)
+    normalized_source = _normalize_source_path(source_path)
+    if not normalized_text or not normalized_source:
+        return ""
+    return f"{str(normalized_source).casefold()}|{normalized_text.casefold()}"
+
+
+def _load_word_audio_overrides():
+    global _word_audio_override_memory
+    with _word_audio_override_lock:
+        if isinstance(_word_audio_override_memory, dict):
+            return dict(_word_audio_override_memory)
+        data = _load_json_file(WORD_AUDIO_OVERRIDE_PATH, {})
+        payload = {}
+        if isinstance(data, dict):
+            for key, value in data.items():
+                backend = str(value or "").strip().lower()
+                if backend in {"gemini", "elevenlabs", "kokoro", "piper"}:
+                    payload[str(key or "").strip()] = backend
+        _word_audio_override_memory = dict(payload)
+        return dict(payload)
+
+
+def _save_word_audio_overrides(data):
+    payload = dict(data or {})
+    target_dir = os.path.dirname(WORD_AUDIO_OVERRIDE_PATH)
+    if target_dir:
+        os.makedirs(target_dir, exist_ok=True)
+    with open(WORD_AUDIO_OVERRIDE_PATH, "w", encoding="utf-8") as fp:
+        json.dump(payload, fp, ensure_ascii=False, indent=2)
+    with _word_audio_override_lock:
+        global _word_audio_override_memory
+        _word_audio_override_memory = dict(payload)
 
 
 def _safe_rel_path(path):
@@ -2027,11 +2121,23 @@ def _is_gemini_rate_limited_error(error):
     )
 
 
-def _clone_to_temp(path):
-    fd, temp_path = tempfile.mkstemp(prefix="wordspeaker_", suffix=".wav")
-    os.close(fd)
-    shutil.copyfile(path, temp_path)
-    return temp_path
+def _clone_to_temp(path, *, volume=1.0):
+    gain = _clamp(volume, 0.0, 6.0)
+    if abs(gain - 1.0) <= 1e-6:
+        fd, temp_path = tempfile.mkstemp(prefix="wordspeaker_", suffix=".wav")
+        os.close(fd)
+        shutil.copyfile(path, temp_path)
+        return temp_path
+    try:
+        with wave.open(path, "rb") as wav_fp:
+            sample_rate = int(wav_fp.getframerate() or TTS_SAMPLE_RATE)
+            pcm_bytes = wav_fp.readframes(wav_fp.getnframes())
+        return _write_pcm_to_wav_path(pcm_bytes, sample_rate=sample_rate, volume=gain)
+    except Exception:
+        fd, temp_path = tempfile.mkstemp(prefix="wordspeaker_", suffix=".wav")
+        os.close(fd)
+        shutil.copyfile(path, temp_path)
+        return temp_path
 
 
 def _ensure_source_gemini_cache(text, source_path=None):
@@ -2110,22 +2216,34 @@ def _ensure_source_gemini_cache(text, source_path=None):
 
 
 def has_cached_word_audio(text, source_path=None):
+    override_backend = get_word_backend_override(text, source_path=source_path)
+    if override_backend in {"kokoro", "piper"}:
+        cache_path = _word_cache_path(text, source_path=source_path)
+        metadata = _load_cache_metadata(cache_path)
+        backend = str(metadata.get("backend") or "").strip().lower()
+        return bool(_resolve_cache_audio_path(cache_path) and backend == override_backend)
     return _has_valid_gemini_cache(_ensure_source_gemini_cache(text, source_path=source_path))
 
 
 def get_word_audio_cache_info(text, source_path=None):
-    cache_path = _ensure_source_gemini_cache(text, source_path=source_path)
+    override_backend = get_word_backend_override(text, source_path=source_path)
+    if override_backend in {"kokoro", "piper"}:
+        cache_path = _word_cache_path(text, source_path=source_path)
+    else:
+        cache_path = _ensure_source_gemini_cache(text, source_path=source_path)
     playable_cache = _resolve_cache_audio_path(cache_path)
     exists = bool(playable_cache)
     metadata = _load_cache_metadata(cache_path)
     backend = str(metadata.get("backend") or "").strip().lower()
-    desired_backend = str(metadata.get("desired_backend") or "").strip().lower()
+    desired_backend = str(override_backend or metadata.get("desired_backend") or "").strip().lower()
     with _pending_gemini_lock:
-        pending = cache_path in _pending_gemini_replacements
-    shared_path, _shared_meta, _shared_provider = _best_shared_online_cache(
-        text,
-        preferred_provider=desired_backend or _current_online_provider(),
-    )
+        pending = bool(not override_backend and cache_path in _pending_gemini_replacements)
+    shared_path = ""
+    if not override_backend:
+        shared_path, _shared_meta, _shared_provider = _best_shared_online_cache(
+            text,
+            preferred_provider=desired_backend or _current_online_provider(),
+        )
     return {
         "exists": exists,
         "cache_path": cache_path,
@@ -2197,6 +2315,10 @@ def export_shared_audio_cache_package(package_path):
             "entries": manifest_entries,
         }
         zf.writestr(
+            SHARED_CACHE_METADATA_FILE,
+            json.dumps(export_shared_metadata_payload(), ensure_ascii=False, indent=2),
+        )
+        zf.writestr(
             SHARED_CACHE_PACKAGE_MANIFEST,
             json.dumps(manifest, ensure_ascii=False, indent=2),
         )
@@ -2222,6 +2344,9 @@ def import_shared_audio_cache_package(package_path):
         "replaced": 0,
         "skipped_same": 0,
         "skipped_older": 0,
+        "metadata_translations": 0,
+        "metadata_pos": 0,
+        "metadata_phonetics": 0,
         "errors": [],
     }
 
@@ -2234,6 +2359,15 @@ def import_shared_audio_cache_package(package_path):
         entries = manifest.get("entries") or []
         if not isinstance(entries, list):
             raise RuntimeError("Shared-cache package manifest is invalid.")
+        if SHARED_CACHE_METADATA_FILE in zf.namelist():
+            try:
+                metadata_payload = json.loads(zf.read(SHARED_CACHE_METADATA_FILE).decode("utf-8", errors="ignore"))
+                metadata_result = import_shared_metadata_payload(metadata_payload)
+                summary["metadata_translations"] = int(metadata_result.get("translations") or 0)
+                summary["metadata_pos"] = int(metadata_result.get("pos") or 0)
+                summary["metadata_phonetics"] = int(metadata_result.get("phonetics") or 0)
+            except Exception as exc:
+                summary["errors"].append(f"metadata.json: {exc}")
 
         for entry in entries:
             if not isinstance(entry, dict):
@@ -2673,7 +2807,7 @@ def validate_tts_api_key(api_key, provider, timeout=25):
 
 
 def _write_pcm_to_wav_path(pcm_bytes, sample_rate, volume):
-    gain = _clamp(volume, 0.0, 1.0)
+    gain = _clamp(volume, 0.0, 6.0)
     if gain <= 0.0:
         pcm_bytes = b""
     elif abs(gain - 1.0) > 1e-6:
@@ -2701,7 +2835,7 @@ def _write_pcm_to_wav_path(pcm_bytes, sample_rate, volume):
 
 
 def _write_float_audio_to_wav_path(audio, sample_rate, volume):
-    gain = _clamp(volume, 0.0, 1.0)
+    gain = _clamp(volume, 0.0, 6.0)
     pcm = np.asarray(audio, dtype=np.float32) * gain
     pcm = np.clip(pcm, -1.0, 1.0)
     pcm16 = (pcm * 32767.0).astype(np.int16)
@@ -2855,13 +2989,13 @@ def _synthesize_with_piper(text, volume, rate_ratio):
     from piper import SynthesisConfig
 
     speed = _clamp(rate_ratio, 0.7, 1.4)
-    syn_config = SynthesisConfig(length_scale=max(0.1, 1.0 / speed), volume=_clamp(volume, 0.0, 1.0))
+    syn_config = SynthesisConfig(length_scale=max(0.1, 1.0 / speed), volume=1.0)
     audio_chunks = list(voice.synthesize(_normalize_tts_spoken_text(text), syn_config=syn_config))
     if not audio_chunks:
         raise RuntimeError("Piper returned no audio.")
     audio = np.concatenate([chunk.audio_float_array for chunk in audio_chunks])
     sample_rate = int(audio_chunks[0].sample_rate or TTS_SAMPLE_RATE)
-    return _write_float_audio_to_wav_path(audio, sample_rate=sample_rate, volume=1.0), "Piper (Local)", False
+    return _write_float_audio_to_wav_path(audio, sample_rate=sample_rate, volume=volume), "Piper (Local)", False
 
 
 def _synthesize_with_local_placeholder(text, volume, rate_ratio):
@@ -2914,69 +3048,97 @@ def _synthesize_to_wav(text, volume, rate_ratio, *, short_text=False, source_pat
     if not normalized:
         raise RuntimeError("Text is empty.")
     online_timeout_seconds = _interactive_online_timeout(short_text)
+    selected_backend = _selected_word_backend_key(text, source_path=source_path, short_text=short_text)
+    cache_path = None
 
     if short_text:
-        cache_path = _ensure_source_gemini_cache(text, source_path=source_path)
-        if _is_online_backend(_selected_source_backend_key()) and _has_valid_gemini_cache(cache_path):
-            playable_cache = _resolve_cache_audio_path(cache_path) or cache_path
-            if request_token is not None:
-                _set_backend_status(request_token, _online_provider_label(), from_cache=True, fallback=False)
-            return _clone_to_temp(playable_cache)
-        if _is_online_backend(_selected_source_backend_key()) and os.path.exists(cache_path):
+        if selected_backend in {"kokoro", "piper"}:
+            cache_path = _word_cache_path(text, source_path=source_path)
+            playable_cache = _resolve_cache_audio_path(cache_path)
             metadata = _load_cache_metadata(cache_path)
             backend_key = str(metadata.get("backend") or "").strip().lower()
-            desired_backend = str(metadata.get("desired_backend") or _current_online_provider()).strip().lower()
-            if backend_key in {"piper", "kokoro"}:
-                _enqueue_existing_cache_for_gemini_replacement(text, cache_path, source_path=source_path)
+            if playable_cache and backend_key == selected_backend:
                 if request_token is not None:
                     _set_backend_status(
                         request_token,
                         _backend_label_from_key(backend_key),
                         from_cache=True,
-                        fallback=True,
+                        fallback=False,
                     )
+                return _clone_to_temp(playable_cache, volume=volume)
+        else:
+            cache_path = _ensure_source_gemini_cache(text, source_path=source_path)
+            if _is_online_backend(selected_backend) and _has_valid_gemini_cache(cache_path):
                 playable_cache = _resolve_cache_audio_path(cache_path) or cache_path
-                return _clone_to_temp(playable_cache)
-            if _is_online_backend(backend_key) and desired_backend != backend_key:
-                _enqueue_existing_cache_for_gemini_replacement(text, cache_path, source_path=source_path)
                 if request_token is not None:
-                    _set_backend_status(
-                        request_token,
-                        _backend_label_from_key(backend_key),
-                        from_cache=True,
-                        fallback=True,
-                    )
-                playable_cache = _resolve_cache_audio_path(cache_path) or cache_path
-                return _clone_to_temp(playable_cache)
-        legacy_cache_path = _legacy_word_cache_path(text, source_path=source_path)
-        if legacy_cache_path and os.path.exists(legacy_cache_path) and not os.path.exists(cache_path):
-            try:
-                os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-                shutil.move(legacy_cache_path, cache_path)
-            except Exception:
+                    _set_backend_status(request_token, _online_provider_label(), from_cache=True, fallback=False)
+                return _clone_to_temp(playable_cache, volume=volume)
+            if _is_online_backend(selected_backend) and os.path.exists(cache_path):
+                metadata = _load_cache_metadata(cache_path)
+                backend_key = str(metadata.get("backend") or "").strip().lower()
+                desired_backend = str(metadata.get("desired_backend") or _current_online_provider()).strip().lower()
+                if backend_key in {"piper", "kokoro"}:
+                    _enqueue_existing_cache_for_gemini_replacement(text, cache_path, source_path=source_path)
+                    if request_token is not None:
+                        _set_backend_status(
+                            request_token,
+                            _backend_label_from_key(backend_key),
+                            from_cache=True,
+                            fallback=True,
+                        )
+                    playable_cache = _resolve_cache_audio_path(cache_path) or cache_path
+                    return _clone_to_temp(playable_cache, volume=volume)
+                if _is_online_backend(backend_key) and desired_backend != backend_key:
+                    _enqueue_existing_cache_for_gemini_replacement(text, cache_path, source_path=source_path)
+                    if request_token is not None:
+                        _set_backend_status(
+                            request_token,
+                            _backend_label_from_key(backend_key),
+                            from_cache=True,
+                            fallback=True,
+                        )
+                    playable_cache = _resolve_cache_audio_path(cache_path) or cache_path
+                    return _clone_to_temp(playable_cache, volume=volume)
+            legacy_cache_path = _legacy_word_cache_path(text, source_path=source_path)
+            if legacy_cache_path and os.path.exists(legacy_cache_path) and not os.path.exists(cache_path):
                 try:
-                    shutil.copyfile(legacy_cache_path, cache_path)
+                    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+                    shutil.move(legacy_cache_path, cache_path)
                 except Exception:
-                    cache_path = legacy_cache_path
-            if not _load_cache_metadata(cache_path):
-                _save_cache_metadata(
-                    cache_path,
-                    {
-                        "backend": "unknown",
-                        "desired_backend": _current_online_provider(),
-                        "source_path": str(source_path or "").strip() or None,
-                    },
-                )
-        if short_text and not _has_valid_gemini_cache(cache_path):
-            _enqueue_existing_cache_for_gemini_replacement(text, cache_path, source_path=source_path)
+                    try:
+                        shutil.copyfile(legacy_cache_path, cache_path)
+                    except Exception:
+                        cache_path = legacy_cache_path
+                if not _load_cache_metadata(cache_path):
+                    _save_cache_metadata(
+                        cache_path,
+                        {
+                            "backend": "unknown",
+                            "desired_backend": _current_online_provider(),
+                            "source_path": str(source_path or "").strip() or None,
+                        },
+                    )
+            if not _has_valid_gemini_cache(cache_path):
+                _enqueue_existing_cache_for_gemini_replacement(text, cache_path, source_path=source_path)
 
-    selected_backend = _selected_source_backend_key()
     if selected_backend == "kokoro":
         wav_path, backend_label, _can_cache = _synthesize_with_kokoro(
             normalized,
             volume=volume,
             rate_ratio=rate_ratio,
         )
+        if short_text and cache_path:
+            try:
+                _save_word_cache_file(
+                    cache_path,
+                    wav_path,
+                    text=normalized,
+                    source_path=source_path,
+                    backend="kokoro",
+                    desired_backend="kokoro",
+                )
+            except Exception:
+                pass
         if request_token is not None:
             _set_backend_status(request_token, backend_label, from_cache=False, fallback=False)
         return wav_path
@@ -2986,6 +3148,18 @@ def _synthesize_to_wav(text, volume, rate_ratio, *, short_text=False, source_pat
             volume=volume,
             rate_ratio=rate_ratio,
         )
+        if short_text and cache_path:
+            try:
+                _save_word_cache_file(
+                    cache_path,
+                    wav_path,
+                    text=normalized,
+                    source_path=source_path,
+                    backend="piper",
+                    desired_backend="piper",
+                )
+            except Exception:
+                pass
         if request_token is not None:
             _set_backend_status(request_token, backend_label, from_cache=False, fallback=False)
         return wav_path

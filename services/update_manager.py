@@ -30,6 +30,7 @@ PROTECTED_UPDATE_FILES = [
     "data/dictation_stats.json",
     "data/history.json",
     "data/pos_cache.json",
+    "data/phonetics_cache.json",
     "data/synonyms_cache.json",
     "data/translation_cache.json",
     "data/user_dictionary.json",
@@ -85,12 +86,16 @@ def load_version_info(base_dir=None):
             "entry_exe": str(data.get("entry_exe") or DEFAULT_ENTRY_EXE).strip() or DEFAULT_ENTRY_EXE,
             "channel_url": str(data.get("channel_url") or "").strip(),
             "shared_cache_manifest_url": str(data.get("shared_cache_manifest_url") or "").strip(),
+            "word_resource_pack_url": str(data.get("word_resource_pack_url") or "").strip(),
+            "bundled_corpus_package_url": str(data.get("bundled_corpus_package_url") or "").strip(),
         }
     return {
         "version": "0.0.0",
         "entry_exe": DEFAULT_ENTRY_EXE,
         "channel_url": "",
         "shared_cache_manifest_url": "",
+        "word_resource_pack_url": "",
+        "bundled_corpus_package_url": "",
     }
 
 

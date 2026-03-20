@@ -12,7 +12,8 @@ from PyInstaller.utils.hooks import (
 
 ROOT = Path(globals().get("SPECPATH", ".")).resolve()
 VENDOR = ROOT / "vendor" / "site-packages"
-ARGOS_PACKAGES = Path.home() / ".local" / "share" / "argos-translate" / "packages"
+ARGOS_PACKAGES = ROOT / "data" / "argos_packages"
+BUNDLED_CORPUS = ROOT / "data" / "bundled_corpus"
 
 for path_entry in (str(VENDOR), str(ROOT)):
     if path_entry in sys.path:
@@ -29,8 +30,12 @@ datas = [
     (str(ROOT / "data" / "nltk_data"), "data/nltk_data"),
     (str(ROOT / "version.json"), "."),
 ]
+if VENDOR.exists():
+    datas.append((str(VENDOR), "vendor/site-packages"))
 if ARGOS_PACKAGES.exists():
     datas.append((str(ARGOS_PACKAGES), "data/argos_packages"))
+if BUNDLED_CORPUS.exists():
+    datas.append((str(BUNDLED_CORPUS), "data/bundled_corpus"))
 binaries = []
 hiddenimports = [
     "docx",

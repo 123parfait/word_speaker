@@ -14,12 +14,17 @@ data/app_config.json
 data/word_stats.json
 data/models/
 data/translation_cache.json
+data/phonetics_cache.json
 data/pos_cache.json
 data/synonyms_cache.json
 data/dictation_stats.json
 data/corpus_index.db
+data/bundled_corpus_state.json
+data/word_audio_overrides.json
 data/nltk_data/
 data/audio_cache/
 data/app.instance.lock
+data/argos_packages/
+data/bundled_corpus/
 .*.wordspeaker_audio/
 vendor/

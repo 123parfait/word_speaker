@@ -27,6 +27,7 @@ def _normalize_entry(raw_entry):
         "note": _clean_text(raw_entry.get("note")),
         "translation": _clean_text(raw_entry.get("translation")),
         "pos": _clean_text(raw_entry.get("pos")),
+        "phonetic": _clean_text(raw_entry.get("phonetic")),
     }
 
 
@@ -71,6 +72,7 @@ def export_word_resource_pack(package_path, entries, metadata=None):
 
     translation_count = sum(1 for entry in normalized_entries if entry.get("translation"))
     pos_count = sum(1 for entry in normalized_entries if entry.get("pos"))
+    phonetic_count = sum(1 for entry in normalized_entries if entry.get("phonetic"))
     note_count = sum(1 for entry in normalized_entries if entry.get("note"))
     return {
         "path": str(target_path),
@@ -79,6 +81,7 @@ def export_word_resource_pack(package_path, entries, metadata=None):
         "entry_count": len(normalized_entries),
         "translation_count": translation_count,
         "pos_count": pos_count,
+        "phonetic_count": phonetic_count,
         "note_count": note_count,
     }
 
@@ -111,6 +114,7 @@ def import_word_resource_pack(package_path):
     entries = _normalize_entries(payload if isinstance(payload, list) else [])
     translation_count = sum(1 for entry in entries if entry.get("translation"))
     pos_count = sum(1 for entry in entries if entry.get("pos"))
+    phonetic_count = sum(1 for entry in entries if entry.get("phonetic"))
     note_count = sum(1 for entry in entries if entry.get("note"))
     return {
         "path": str(source_path),
@@ -119,5 +123,6 @@ def import_word_resource_pack(package_path):
         "entry_count": len(entries),
         "translation_count": translation_count,
         "pos_count": pos_count,
+        "phonetic_count": phonetic_count,
         "note_count": note_count,
     }
