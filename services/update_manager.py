@@ -329,6 +329,8 @@ def launch_staged_update(source_dir, *, entry_exe=None):
     exe_name = str(entry_exe or load_local_version_info().get("entry_exe") or DEFAULT_ENTRY_EXE).strip() or DEFAULT_ENTRY_EXE
     script_path = Path(tempfile.mkdtemp(prefix=UPDATE_STAGE_PREFIX)) / "apply_update.ps1"
     current_pid = os.getpid()
+    status_path = install_dir / "data" / "update_status.txt"
+    error_path = install_dir / "data" / "update_error.log"
 
     protected_prefixes = ", ".join(_ps_quote(item) for item in PROTECTED_UPDATE_PREFIXES)
     protected_files = ", ".join(_ps_quote(item) for item in PROTECTED_UPDATE_FILES)
@@ -337,59 +339,155 @@ $appDir = {_ps_quote(str(install_dir))}
 $sourceDir = {_ps_quote(str(source_root))}
 $entryExe = {_ps_quote(exe_name)}
 $currentPid = {int(current_pid)}
+$statusPath = {_ps_quote(str(status_path))}
+$errorPath = {_ps_quote(str(error_path))}
 $protectedPrefixes = @({protected_prefixes})
 $protectedFiles = @({protected_files})
 $deadline = (Get-Date).AddMinutes(5)
 
-while ($true) {{
-    $proc = Get-Process -Id $currentPid -ErrorAction SilentlyContinue
-    if (-not $proc) {{
-        break
-    }}
-    if ((Get-Date) -gt $deadline) {{
-        exit 1
-    }}
-    Start-Sleep -Milliseconds 500
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+
+$form = New-Object System.Windows.Forms.Form
+$form.Text = 'Word Speaker Updater'
+$form.StartPosition = 'CenterScreen'
+$form.FormBorderStyle = 'FixedDialog'
+$form.MaximizeBox = $false
+$form.MinimizeBox = $false
+$form.Width = 460
+$form.Height = 170
+$form.TopMost = $true
+
+$label = New-Object System.Windows.Forms.Label
+$label.Left = 18
+$label.Top = 18
+$label.Width = 405
+$label.Height = 46
+$label.Text = 'Preparing update...'
+
+$progress = New-Object System.Windows.Forms.ProgressBar
+$progress.Left = 18
+$progress.Top = 74
+$progress.Width = 405
+$progress.Height = 22
+$progress.Style = 'Marquee'
+$progress.MarqueeAnimationSpeed = 25
+
+$hint = New-Object System.Windows.Forms.Label
+$hint.Left = 18
+$hint.Top = 108
+$hint.Width = 405
+$hint.Height = 24
+$hint.ForeColor = [System.Drawing.Color]::FromArgb(96, 96, 96)
+$hint.Text = 'Word Speaker will reopen automatically after the update.'
+
+$form.Controls.Add($label)
+$form.Controls.Add($progress)
+$form.Controls.Add($hint)
+$form.Show()
+[System.Windows.Forms.Application]::DoEvents()
+
+function Set-UpdateStatus([string]$text) {{
+    $label.Text = $text
+    try {{
+        $statusDir = Split-Path -Parent $statusPath
+        if ($statusDir) {{
+            New-Item -ItemType Directory -Path $statusDir -Force | Out-Null
+        }}
+        Set-Content -LiteralPath $statusPath -Value $text -Encoding UTF8
+    }} catch {{}}
+    $form.Refresh()
+    [System.Windows.Forms.Application]::DoEvents()
 }}
 
-Get-ChildItem -LiteralPath $sourceDir -Recurse -Force | Where-Object {{ -not $_.PSIsContainer }} | ForEach-Object {{
-    $relative = $_.FullName.Substring($sourceDir.Length).TrimStart('\\', '/')
-    $relativeUnix = $relative -replace '\\\\', '/'
-    $skip = $false
-    foreach ($prefix in $protectedPrefixes) {{
-        if ($relativeUnix.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {{
-            $skip = $true
+function Fail-Update([string]$message) {{
+    try {{
+        $errorDir = Split-Path -Parent $errorPath
+        if ($errorDir) {{
+            New-Item -ItemType Directory -Path $errorDir -Force | Out-Null
+        }}
+        Set-Content -LiteralPath $errorPath -Value $message -Encoding UTF8
+    }} catch {{}}
+    Set-UpdateStatus('Update failed.')
+    [System.Windows.Forms.MessageBox]::Show($message, 'Word Speaker Updater', 'OK', 'Error') | Out-Null
+    exit 1
+}}
+
+try {{
+    Set-UpdateStatus('Waiting for Word Speaker to close...')
+    while ($true) {{
+        $proc = Get-Process -Id $currentPid -ErrorAction SilentlyContinue
+        if (-not $proc) {{
             break
         }}
+        if ((Get-Date) -gt $deadline) {{
+            Fail-Update 'Timed out waiting for Word Speaker to close.'
+        }}
+        Start-Sleep -Milliseconds 500
     }}
-    if (-not $skip) {{
-        foreach ($protected in $protectedFiles) {{
-            if ($relativeUnix.Equals($protected, [System.StringComparison]::OrdinalIgnoreCase)) {{
-                $skip = $true
-                break
+
+    $files = Get-ChildItem -LiteralPath $sourceDir -Recurse -Force | Where-Object {{ -not $_.PSIsContainer }} | Where-Object {{
+        $relative = $_.FullName.Substring($sourceDir.Length).TrimStart('\\', '/')
+        $relativeUnix = $relative -replace '\\\\', '/'
+        foreach ($prefix in $protectedPrefixes) {{
+            if ($relativeUnix.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {{
+                return $false
             }}
         }}
+        foreach ($protected in $protectedFiles) {{
+            if ($relativeUnix.Equals($protected, [System.StringComparison]::OrdinalIgnoreCase)) {{
+                return $false
+            }}
+        }}
+        return $true
     }}
-    if ($skip) {{
-        return
+
+    $totalFiles = @($files).Count
+    if ($totalFiles -gt 0) {{
+        $progress.Style = 'Continuous'
+        $progress.Minimum = 0
+        $progress.Maximum = $totalFiles
+        $progress.Value = 0
     }}
-    $destination = Join-Path $appDir $relative
-    $destinationDir = Split-Path -Parent $destination
-    if ($destinationDir) {{
-        New-Item -ItemType Directory -Path $destinationDir -Force | Out-Null
+
+    $index = 0
+    foreach ($item in $files) {{
+        $relative = $item.FullName.Substring($sourceDir.Length).TrimStart('\\', '/')
+        Set-UpdateStatus(("Applying update files... ({0}/{1})" -f ($index + 1), $totalFiles))
+        $destination = Join-Path $appDir $relative
+        $destinationDir = Split-Path -Parent $destination
+        if ($destinationDir) {{
+            New-Item -ItemType Directory -Path $destinationDir -Force | Out-Null
+        }}
+        Copy-Item -LiteralPath $item.FullName -Destination $destination -Force
+        $index += 1
+        if ($totalFiles -gt 0 -and $progress.Value -lt $progress.Maximum) {{
+            $progress.Value = $index
+            [System.Windows.Forms.Application]::DoEvents()
+        }}
     }}
-    Copy-Item -LiteralPath $_.FullName -Destination $destination -Force
+
+    Set-UpdateStatus('Starting the new version...')
+    Start-Sleep -Milliseconds 300
+    Start-Process -FilePath (Join-Path $appDir $entryExe) -WorkingDirectory $appDir
+
+    try {{
+        Remove-Item -LiteralPath $sourceDir -Recurse -Force
+    }} catch {{}}
+    try {{
+        Remove-Item -LiteralPath $statusPath -Force
+    }} catch {{}}
+
+    Set-UpdateStatus('Update complete. Launching Word Speaker...')
+    Start-Sleep -Milliseconds 900
+    $form.Close()
+}} catch {{
+    Fail-Update ("Update failed: " + $_.Exception.Message)
+}} finally {{
+    try {{
+        Remove-Item -LiteralPath {_ps_quote(str(script_path))} -Force
+    }} catch {{}}
 }}
-
-Start-Sleep -Milliseconds 300
-Start-Process -FilePath (Join-Path $appDir $entryExe)
-
-try {{
-    Remove-Item -LiteralPath $sourceDir -Recurse -Force
-}} catch {{}}
-try {{
-    Remove-Item -LiteralPath {_ps_quote(str(script_path))} -Force
-}} catch {{}}
 """
     script_path.write_text(script, encoding="utf-8")
 

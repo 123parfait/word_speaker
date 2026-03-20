@@ -28,6 +28,7 @@ from services.tts import (
     has_cached_word_audio as tts_has_cached_word_audio,
     export_shared_audio_cache_package as tts_export_shared_audio_cache_package,
     import_shared_audio_cache_package as tts_import_shared_audio_cache_package,
+    set_error_notifier as tts_set_error_notifier,
 )
 from services.translation import (
     get_cached_translations,
@@ -77,7 +78,6 @@ from services.voice_manager import (
     get_voice_source,
     set_voice_source,
 )
-from services.diff_view import apply_diff
 from services.update_manager import (
     build_online_manifest,
     build_update_package,
@@ -93,6 +93,7 @@ from services.update_manager import (
 )
 from ui.detail_presenter import build_detail_view_state, build_recent_wrong_detail_view_state
 from ui.detail_sidebar import build_detail_card, build_review_tab
+from ui.diff_view_adapter import apply_diff
 from ui.dictation_controller import DictationController
 from ui.dictation_panel import build_dictation_answer_review_popup
 from ui.dictation_session_coordinator import (
@@ -235,6 +236,7 @@ from ui.word_action_coordinator import (
     on_word_right_click as on_word_right_click_flow,
     set_context as set_word_action_context_flow,
 )
+from ui.main_view_state import MainViewState, bind_state_properties
 from ui.word_list_controller import WordListController
 from ui.word_metadata_coordinator import (
     apply_phonetics as apply_phonetics_flow,
@@ -470,7 +472,7 @@ UI_TEXTS = {
         "update_online_available": "发现新版本 {version}。\n\n是否下载并安装？",
         "update_offline_confirm": "准备安装更新包版本 {version}。\n\n是否现在更新？",
         "update_reinstall_confirm": "更新包版本是 {version}，与当前版本相同或更旧。\n\n仍然要继续安装吗？",
-        "update_started": "更新程序已经启动。当前窗口会关闭，并在更新完成后自动打开新版本。",
+        "update_started": "更新程序已经启动。当前窗口会关闭，随后会出现更新进度窗口，并在完成后自动打开新版本。",
         "update_failed": "启动更新失败：{error}",
         "tools_tip": "提示：先选中单词，再生成例句或做定向语料检索。",
         "settings_title": "设置",
@@ -812,7 +814,7 @@ UI_TEXTS = {
         "update_online_available": "Version {version} is available.\n\nDownload and install it now?",
         "update_offline_confirm": "Ready to install update package version {version}.\n\nUpdate now?",
         "update_reinstall_confirm": "The package version is {version}, which is the same or older than the current version.\n\nInstall it anyway?",
-        "update_started": "The updater has started. This window will close and the new version will launch when the update finishes.",
+        "update_started": "The updater has started. This window will close, an update progress window will appear, and the new version will launch when the update finishes.",
         "update_failed": "Failed to start the update: {error}",
         "tools_tip": "Tip: select a word first for sentence generation and targeted corpus search.",
         "settings_title": "Settings",
@@ -1060,235 +1062,16 @@ class MainView(ttk.Frame):
         self.recent_wrong_controller = RecentWrongController(self.store)
         self.word_list_controller = WordListController(self.store)
         self.main_playback_controller = MainPlaybackController()
-
-        self.order_mode = tk.StringVar(value="order")
-        self.interval_var = tk.DoubleVar(value=2.0)
-        self.volume_var = tk.IntVar(value=80)
-        self.dictation_volume_var = tk.IntVar(value=100)
-        self.speech_rate_var = tk.DoubleVar(value=1.0)
-        self.status_var = tk.StringVar(value="Not started")
-
-        self.play_state = "stopped"
-        self.queue = []
-        self.pos = -1
-        self.current_word = None
-        self.after_id = None
-        self.play_token = 0
-        self.playback_schedule_token = 0
-
-        self.history_visible = True
-        self.check_visible = False
-        self.wordlist_hidden = False
-        self.order_btn = None
-        self.order_btn_rand = None
-        self.order_btn_click = None
-        self.order_tip = None
-        self.order_tip_rand = None
-        self.order_tip_click = None
-        self.loop_btn = None
-        self.loop_btn_stop = None
-        self.stop_at_end_check = None
-        self.speed_buttons = []
-        self.speech_rate_buttons = []
-        self.volume_scale = None
-        self.player_frame = None
-        self.play_btn_check = None
-        self.dictation_volume_btn = None
-        self.dictation_volume_popup = None
-        self.dictation_volume_scale = None
-        self.dictation_volume_value_label = None
-        self.settings_btn_check = None
-        self.check_btn_toggle_check = None
-        self.hist_btn_toggle_check = None
-        self.passage_btn_check = None
-        self.find_btn = None
-        self.find_btn_check = None
-        self.check_controls = None
-        self.hide_words_btn = None
-        self.main = None
-        self.voice_var = tk.StringVar(value="")
-        self.voice_combo = None
-        self.voice_map = {}
-        self.tts_status_request = 0
-        self.word_table = None
-        self.word_table_scroll = None
-        self.word_context_menu = None
-        self.dictation_context_menu = None
-        self.history_context_menu = None
-        self.word_action_index = None
-        self.word_action_word = ""
-        self.word_action_origin = "main"
-        self.word_edit_entry = None
-        self.word_edit_row = None
-        self.word_edit_column = None
-        self.suppress_word_select_action = False
-        self.suppress_dictation_select_action = False
-        self.last_word_speak_index = None
-        self.last_word_speak_at = 0.0
-        self.last_dictation_preview_key = None
-        self.last_dictation_preview_at = 0.0
-        self.sentence_window = None
-        self.synonym_window = None
-        self.manual_words_window = None
-        self.manual_words_table = None
-        self.manual_words_table_scroll = None
-        self.manual_preview_edit_entry = None
-        self.manual_preview_edit_item = None
-        self.manual_preview_edit_column = None
-        self.sentence_generation_token = 0
-        self.sentence_generation_active_token = 0
-        self.sentence_event_queue = queue.Queue()
-        self.synonym_lookup_token = 0
-        self.synonym_lookup_active_token = 0
-        self.synonym_event_queue = queue.Queue()
-        self.translations = {}
-        self.word_pos = {}
-        self.word_phonetics = {}
-        self.pending_translation_words = set()
-        self.pending_analysis_words = set()
-        self.pending_phonetic_words = set()
-        self.translation_token = 0
-        self.analysis_token = 0
-        self.phonetic_token = 0
-        self.manual_source_dirty = False
-        self.ui_language_var = tk.StringVar(value=get_ui_language())
-        self.passage_window = None
-        self.passage_text = None
-        self.passage_status_var = tk.StringVar(value="Load words and click Generate.")
-        self.gemini_model_var = tk.StringVar(value=get_generation_model() or DEFAULT_GEMINI_MODEL)
-        self.gemini_model_combo = None
-        self.gemini_model_values = []
-        self.llm_api_provider_var = tk.StringVar(value=self.tr("provider_gemini"))
-        self.tts_api_provider_var = tk.StringVar(value=self._tts_provider_label(get_tts_api_provider()))
-        self.gemini_verified = False
-        self.api_key_window = None
-        self.api_key_force_llm = False
-        self.api_key_force_tts = False
-        self.gemini_key_var = tk.StringVar(value=get_llm_api_key())
-        self.gemini_key_status_var = tk.StringVar(value="Paste your LLM API key, then test it.")
-        self.tts_key_var = tk.StringVar(value=get_tts_api_key())
-        self.tts_key_status_var = tk.StringVar(value="Paste your TTS API key, then test it.")
-        self.api_key_test_btn = None
-        self.api_llm_entry = None
-        self.api_tts_entry = None
-        self.gemini_runtime_status_var = tk.StringVar(value="")
-        self.gemini_retry_status_var = tk.StringVar(value="")
-        self.gemini_status_after = None
-        self.gemini_key_test_btn = None
-        self.tts_key_test_btn = None
-        self.gemini_validation_token = 0
-        self.gemini_validation_active_token = 0
-        self.gemini_validation_queue = queue.Queue()
-        self.current_passage = ""
-        self.current_passage_original = ""
-        self.current_passage_words = []
-        self.passage_cloze_text = ""
-        self.passage_answers = []
-        self.passage_is_practice = False
-        self.passage_practice_input = None
-        self.passage_practice_result = None
-        self.passage_generation_token = 0
-        self.passage_generation_active_token = 0
-        self.passage_event_queue = queue.Queue()
-        self.find_window = None
-        self.find_search_var = tk.StringVar(value="")
-        self.find_limit_var = tk.StringVar(value="20")
-        self.find_status_var = tk.StringVar(value="Import docs, then search by word or phrase.")
-        self.find_results_table = None
-        self.find_preview_text = None
-        self.find_docs_list = None
-        self.find_import_btn = None
-        self.find_docs_context_menu = None
-        self.find_doc_items = []
-        self.find_result_items = {}
-        self.find_task_queue = queue.Queue()
-        self.find_task_token = 0
-        self.find_active_token = 0
-        self.audio_precache_token = 0
-        self.dictation_mode_var = tk.StringVar(value="online_spelling")
-        self.dictation_feedback_var = tk.StringVar(value="live")
-        self.dictation_speed_var = tk.StringVar(value="1.0")
-        self.dictation_order_var = tk.StringVar(value="order")
-        self.dictation_status_var = tk.StringVar(value="Recent mistake list")
-        self.dictation_timer_var = tk.StringVar(value="5s")
-        self.dictation_progress_var = tk.StringVar(value="Spelling (0/0)")
-        self.dictation_summary_var = tk.StringVar(value="")
-        self.dictation_recent_list = None
-        self.dictation_recent_items = []
-        self.dictation_all_items = []
-        self.dictation_list_mode_var = tk.StringVar(value="recent")
-        self.dictation_all_tab_var = tk.StringVar(value="All (0)")
-        self.dictation_recent_tab_var = tk.StringVar(value="Recent Wrong (0)")
-        self.dictation_setup_frame = None
-        self.dictation_session_frame = None
-        self.dictation_result_frame = None
-        self.dictation_mode_popup = None
-        self.dictation_mode_buttons = []
-        self.dictation_order_buttons = []
-        self.dictation_input = None
-        self.dictation_result_label = None
-        self.dictation_progress = None
-        self.dictation_timer_after = None
-        self.dictation_feedback_after = None
-        self.dictation_play_after = None
-        self.dictation_pool = []
-        self.dictation_index = -1
-        self.dictation_current_word = ""
-        self.dictation_wrong_items = []
-        self.dictation_session_attempts = []
-        self.dictation_correct_count = 0
-        self.dictation_answer_revealed = False
-        self.dictation_running = False
-        self.dictation_paused = False
-        self.dictation_seconds_left = 0
-        self.dictation_session_source_path = None
-        self.dictation_session_list_mode = "all"
-        self.dictation_previous_session_accuracy = self.store.get_last_dictation_accuracy()
-        self.dictation_answer_review_popup = None
-        self.dictation_answer_review_tree = None
-        self.dictation_answer_review_accuracy_var = None
-        self.dictation_answer_review_last_var = None
-        self.dictation_answer_review_filter_var = None
-        self.dictation_answer_review_show_wrong_only = False
-        self.dictation_result_review_tree = None
-        self.dictation_result_accuracy_var = None
-        self.dictation_result_last_var = None
-        self.dictation_result_filter_var = None
-        self.right_notebook = None
-        self.review_tab = None
-        self.check_tab = None
-        self.check_panel = None
-        self.history_tab = None
-        self.tools_tab = None
-        self.dictation_window = None
-        self.detail_word_var = tk.StringVar(value="No word selected")
-        self.detail_note_var = tk.StringVar(value="Select a word to see notes and translation.")
-        self.detail_translation_var = tk.StringVar(value="")
-        self.detail_meta_var = tk.StringVar(value="Import a list to begin.")
-        self.review_source_var = tk.StringVar(value="Source file: none")
-        self.review_stats_var = tk.StringVar(value="Words: 0")
-        self.review_focus_var = tk.StringVar(value="Focus: select a word or start playback.")
-        self.tools_hint_var = tk.StringVar(value="Open tools from here instead of hunting across the window.")
-        self.detail_speak_btn = None
-        self.detail_sentence_btn = None
-        self.detail_find_btn = None
-        self.review_open_source_btn = None
-        self.tools_sentence_btn = None
-        self.tools_passage_btn = None
-        self.tools_find_btn = None
-        self.tools_settings_btn = None
-        self.tools_update_btn = None
-        self.tools_export_cache_btn = None
-        self.tools_import_cache_btn = None
-        self.tools_export_resource_pack_btn = None
-        self.tools_import_resource_pack_btn = None
-        self.save_as_btn = None
-        self.new_list_btn = None
-        self.detail_edit_btn = None
-        self.detail_card = None
-        self.saved_window_geometry = ""
-        self.saved_window_minsize = None
-        self.hidden_notebook_tabs = []
+        self.state = MainViewState.create(
+            store=self.store,
+            ui_language=get_ui_language(),
+            generation_model=get_generation_model(),
+            llm_api_key=get_llm_api_key(),
+            tts_api_key=get_tts_api_key(),
+            llm_provider_label="Gemini",
+            tts_provider_label="ElevenLabs" if str(get_tts_api_provider() or "").strip().lower() == "elevenlabs" else "Gemini",
+            default_gemini_model=DEFAULT_GEMINI_MODEL,
+        )
 
         self.build_ui()
         try:
@@ -1301,6 +1084,7 @@ class MainView(ttk.Frame):
         self.update_speech_rate_buttons()
         self.update_play_button()
         self.update_right_visibility()
+        tts_set_error_notifier(lambda message: messagebox.showerror("Speech Error", f"Error: {message}"))
         tts_prepare_async()
         translation_prepare_async()
         bundled_corpus_prepare_async()
@@ -4434,4 +4218,7 @@ class MainView(ttk.Frame):
 
     def _watch_tts_backend(self, token, target, text_label):
         watch_tts_backend_flow(self, token, target, text_label)
+
+
+bind_state_properties(MainView)
 

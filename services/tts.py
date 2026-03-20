@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-import base64
 import hashlib
 import json
 import os
@@ -8,13 +7,10 @@ import shutil
 import tempfile
 import threading
 import time
-import urllib.error
-import urllib.request
 import wave
 import winsound
 
 import numpy as np
-from tkinter import messagebox
 
 from services.app_config import get_llm_api_key, get_tts_api_key, get_tts_api_provider
 from services.runtime_log import log_error as _log_error, log_info as _log_info, log_warning as _log_warning
@@ -56,6 +52,25 @@ from services.tts_shared_cache import (
     export_shared_audio_cache_package as _export_shared_audio_cache_package_impl,
     import_shared_audio_cache_package as _import_shared_audio_cache_package_impl,
 )
+from services.tts_online import (
+    extract_pcm_bytes as _extract_pcm_bytes,
+    request_elevenlabs_tts as _request_elevenlabs_tts_impl,
+    request_gemini_tts as _request_gemini_tts_impl,
+    request_online_tts as _request_online_tts_impl,
+    validate_elevenlabs_tts_api_key as _validate_elevenlabs_tts_api_key_impl,
+    validate_gemini_tts_api_key as _validate_gemini_tts_api_key_impl,
+    validate_tts_api_key as _validate_tts_api_key_impl,
+)
+from services.tts_cache_maintenance import (
+    cleanup_duplicate_source_cache_entries as _cleanup_duplicate_source_cache_entries_impl,
+    collapse_all_source_cache_entities_to_aliases as _collapse_all_source_cache_entities_to_aliases_impl,
+    collapse_existing_lightweight_source_caches as _collapse_existing_lightweight_source_caches_impl,
+    migrate_flat_root_cache_layout as _migrate_flat_root_cache_layout_impl,
+    migrate_legacy_word_wrapper_layout as _migrate_legacy_word_wrapper_layout_impl,
+    normalize_cache_metadata_texts as _normalize_cache_metadata_texts_impl,
+)
+from services.tts_pending_worker import run_pending_online_worker as _run_pending_online_worker
+from services.tts_runtime import TtsRuntimeConfig, TtsRuntimeState
 from services.tts_synth_cache import resolve_short_text_cache as _resolve_short_text_cache
 from services.tts_synth_execute import (
     execute_local_backend as _execute_local_backend,
@@ -87,44 +102,40 @@ SHARED_CACHE_PACKAGE_VERSION = 2
 SHARED_CACHE_PACKAGE_MANIFEST = "manifest.json"
 SHARED_CACHE_METADATA_FILE = "global/metadata.json"
 
-_lock = threading.Lock()
-_token = 0
-_shown_errors = set()
-_current_wav = None
-_kokoro = None
-_kokoro_lock = threading.Lock()
-_piper_voices = {}
-_piper_lock = threading.Lock()
-_backend_lock = threading.Lock()
-_backend_status = {}
-_pending_gemini_replacements = {}
-_pending_gemini_lock = threading.Lock()
-_pending_gemini_worker_running = False
-_preferred_pending_source = None
-_manual_session_cache_paths = set()
-_manual_session_cache_lock = threading.Lock()
-_word_audio_override_lock = threading.Lock()
-_word_audio_override_memory = None
-TTS_MODEL = "gemini-2.5-flash-preview-tts"
+_runtime_config = TtsRuntimeConfig()
+_runtime_state = TtsRuntimeState()
+_lock = _runtime_state.lock
+_shown_errors = _runtime_state.shown_errors
+_kokoro_lock = _runtime_state.kokoro_lock
+_piper_voices = _runtime_state.piper_voices
+_piper_lock = _runtime_state.piper_lock
+_backend_lock = _runtime_state.backend_lock
+_backend_status = _runtime_state.backend_status
+_pending_gemini_replacements = _runtime_state.pending_gemini_replacements
+_pending_gemini_lock = _runtime_state.pending_gemini_lock
+_manual_session_cache_paths = _runtime_state.manual_session_cache_paths
+_manual_session_cache_lock = _runtime_state.manual_session_cache_lock
+_word_audio_override_lock = _runtime_state.word_audio_override_lock
+TTS_MODEL = _runtime_config.tts_model
 TTS_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{TTS_MODEL}:generateContent"
-TTS_SAMPLE_RATE = 24000
-TTS_CHANNELS = 1
-TTS_SAMPLE_WIDTH = 2
-TTS_VOICE_NAME = "Kore"
-TTS_STYLE_SHORT = "Read the word clearly in a neutral British English accent for IELTS vocabulary practice."
-TTS_STYLE_LONG = "Read this passage clearly in a natural British English accent for IELTS listening practice."
-ELEVENLABS_VOICE_ID = "JBFqnCBsd6RMkjVDRZzb"
-ELEVENLABS_MODEL_ID = "eleven_multilingual_v2"
+TTS_SAMPLE_RATE = _runtime_config.tts_sample_rate
+TTS_CHANNELS = _runtime_config.tts_channels
+TTS_SAMPLE_WIDTH = _runtime_config.tts_sample_width
+TTS_VOICE_NAME = _runtime_config.tts_voice_name
+TTS_STYLE_SHORT = _runtime_config.tts_style_short
+TTS_STYLE_LONG = _runtime_config.tts_style_long
+ELEVENLABS_VOICE_ID = _runtime_config.elevenlabs_voice_id
+ELEVENLABS_MODEL_ID = _runtime_config.elevenlabs_model_id
 ELEVENLABS_URL = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}?output_format=pcm_24000"
-ONLINE_TTS_REQUEST_TIMEOUT_SECONDS = 180
-INTERACTIVE_FAST_TIMEOUT_SHORT_SECONDS = 12
-INTERACTIVE_FAST_TIMEOUT_LONG_SECONDS = 20
-GEMINI_QUEUE_REQUEST_INTERVAL_SECONDS = 40
-GEMINI_RATE_LIMIT_COOLDOWN_SECONDS = 120
-GEMINI_MANUAL_REQUEST_COOLDOWN_SECONDS = 60
-ELEVENLABS_QUEUE_REQUEST_INTERVAL_SECONDS = 1.5
-ELEVENLABS_RATE_LIMIT_COOLDOWN_SECONDS = 45
-ELEVENLABS_MANUAL_REQUEST_COOLDOWN_SECONDS = 3
+ONLINE_TTS_REQUEST_TIMEOUT_SECONDS = _runtime_config.online_tts_request_timeout_seconds
+INTERACTIVE_FAST_TIMEOUT_SHORT_SECONDS = _runtime_config.interactive_fast_timeout_short_seconds
+INTERACTIVE_FAST_TIMEOUT_LONG_SECONDS = _runtime_config.interactive_fast_timeout_long_seconds
+GEMINI_QUEUE_REQUEST_INTERVAL_SECONDS = _runtime_config.gemini_queue_request_interval_seconds
+GEMINI_RATE_LIMIT_COOLDOWN_SECONDS = _runtime_config.gemini_rate_limit_cooldown_seconds
+GEMINI_MANUAL_REQUEST_COOLDOWN_SECONDS = _runtime_config.gemini_manual_request_cooldown_seconds
+ELEVENLABS_QUEUE_REQUEST_INTERVAL_SECONDS = _runtime_config.elevenlabs_queue_request_interval_seconds
+ELEVENLABS_RATE_LIMIT_COOLDOWN_SECONDS = _runtime_config.elevenlabs_rate_limit_cooldown_seconds
+ELEVENLABS_MANUAL_REQUEST_COOLDOWN_SECONDS = _runtime_config.elevenlabs_manual_request_cooldown_seconds
 _QUEUE_THROTTLE_CONFIG = {
     "gemini": {
         "base_interval": GEMINI_QUEUE_REQUEST_INTERVAL_SECONDS,
@@ -145,8 +156,7 @@ _QUEUE_THROTTLE_CONFIG = {
         "rate_limit_step": 1.25,
     },
 }
-_online_queue_manager = OnlineTtsQueueManager(throttle_config=_QUEUE_THROTTLE_CONFIG)
-_cache_metadata_store = None
+_runtime_state.online_queue_manager = OnlineTtsQueueManager(throttle_config=_QUEUE_THROTTLE_CONFIG)
 
 
 def _clamp(value, low, high):
@@ -154,53 +164,53 @@ def _clamp(value, low, high):
 
 
 def _set_gemini_queue_status(**updates):
-    _online_queue_manager.set_status(**updates)
+    _runtime_state.online_queue_manager.set_status(**updates)
 
 
 def _provider_key(provider):
-    return _online_queue_manager.provider_key(provider)
+    return _runtime_state.online_queue_manager.provider_key(provider)
 
 
 def _queue_throttle_config(provider):
-    return _online_queue_manager.throttle_config(provider)
+    return _runtime_state.online_queue_manager.throttle_config(provider)
 
 
 def _get_queue_throttle_snapshot(provider):
-    return _online_queue_manager.get_queue_throttle_snapshot(provider)
+    return _runtime_state.online_queue_manager.get_queue_throttle_snapshot(provider)
 
 
 def _queue_interval_for_provider(provider):
-    return _online_queue_manager.queue_interval_for_provider(provider)
+    return _runtime_state.online_queue_manager.queue_interval_for_provider(provider)
 
 
 def _record_queue_success(provider):
-    _online_queue_manager.record_queue_success(provider)
+    _runtime_state.online_queue_manager.record_queue_success(provider)
 
 
 def _record_queue_soft_failure(provider):
-    _online_queue_manager.record_queue_soft_failure(provider)
+    _runtime_state.online_queue_manager.record_queue_soft_failure(provider)
 
 
 def _record_queue_rate_limit(provider):
-    _online_queue_manager.record_queue_rate_limit(provider)
+    _runtime_state.online_queue_manager.record_queue_rate_limit(provider)
 
 
 def _refresh_gemini_queue_status_counts():
     with _pending_gemini_lock:
         queue_count = len(_pending_gemini_replacements)
-        worker_running = bool(_pending_gemini_worker_running)
+        worker_running = bool(_runtime_state.pending_gemini_worker_running)
     try:
         disk_payload = _load_pending_queue_disk_payload()
         if isinstance(disk_payload, list):
             queue_count = len(disk_payload)
     except Exception as exc:
         _log_warning("tts_queue_status_disk_payload_failed", error=exc)
-    _online_queue_manager.refresh_counts(queue_count=queue_count, worker_running=worker_running)
+    _runtime_state.online_queue_manager.refresh_counts(queue_count=queue_count, worker_running=worker_running)
 
 
 def get_gemini_queue_status():
     _refresh_gemini_queue_status_counts()
-    return _online_queue_manager.get_status()
+    return _runtime_state.online_queue_manager.get_status()
 
 
 def get_online_tts_queue_status():
@@ -208,11 +218,11 @@ def get_online_tts_queue_status():
 
 
 def _defer_gemini_queue(wait_seconds, *, state=None, provider=None):
-    _online_queue_manager.defer(wait_seconds, state=state, provider=provider)
+    _runtime_state.online_queue_manager.defer(wait_seconds, state=state, provider=provider)
 
 
 def _wait_for_gemini_queue_slot(provider=None):
-    _online_queue_manager.wait_for_slot(provider=provider)
+    _runtime_state.online_queue_manager.wait_for_slot(provider=provider)
 
 
 def _synthesize_with_user_online(text, volume, *, short_text, timeout_seconds=ONLINE_TTS_REQUEST_TIMEOUT_SECONDS):
@@ -589,15 +599,14 @@ def _word_audio_override_key(text, source_path=None):
 
 
 def _load_word_audio_overrides():
-    global _word_audio_override_memory
     with _word_audio_override_lock:
-        if isinstance(_word_audio_override_memory, dict):
-            return dict(_word_audio_override_memory)
+        if isinstance(_runtime_state.word_audio_override_memory, dict):
+            return dict(_runtime_state.word_audio_override_memory)
         payload = _load_word_audio_overrides_from_disk(
             WORD_AUDIO_OVERRIDE_PATH,
             allowed_backends={"gemini", "elevenlabs", "kokoro", "piper"},
         )
-        _word_audio_override_memory = dict(payload)
+        _runtime_state.word_audio_override_memory = dict(payload)
         return dict(payload)
 
 
@@ -605,8 +614,7 @@ def _save_word_audio_overrides(data):
     payload = dict(data or {})
     _save_word_audio_overrides_to_disk(WORD_AUDIO_OVERRIDE_PATH, payload)
     with _word_audio_override_lock:
-        global _word_audio_override_memory
-        _word_audio_override_memory = dict(payload)
+        _runtime_state.word_audio_override_memory = dict(payload)
 
 
 def _safe_rel_path(path):
@@ -688,245 +696,54 @@ def _shared_cache_target_path(relative_path="", metadata=None):
 
 
 def _migrate_flat_root_cache_layout():
-    renamed_paths = {}
-    scan_roots = []
-    for root in (LEGACY_WORD_CACHE_WRAPPER_DIR, GLOBAL_WORD_CACHE_DIR):
-        if os.path.isdir(root) and root not in scan_roots:
-            scan_roots.append(root)
-
-    for scan_root in scan_roots:
-        entries = list(os.listdir(scan_root))
-        for name in entries:
-            full_path = os.path.join(scan_root, name)
-            if os.path.isdir(full_path):
-                continue
-            if name.lower().endswith(".wav"):
-                cache_path = full_path
-            elif name.lower().endswith(".wav.json"):
-                cache_path = full_path[:-5]
-            else:
-                continue
-
-            cache_name = os.path.basename(cache_path)
-            metadata = _load_json_file(_cache_meta_path(cache_path), {})
-            source_hint = _normalize_source_path((metadata or {}).get("source_path"))
-            if source_hint == "shared":
-                target_dir = os.path.join(SHARED_WORD_CACHE_DIR, _filename_letter_bucket(cache_name))
-            else:
-                target_dir = os.path.join(
-                    SOURCE_WORD_CACHE_ROOT_DIR,
-                    _source_bucket_name(source_hint),
-                    _filename_letter_bucket(cache_name),
-                )
-            target_cache_path = os.path.join(target_dir, cache_name)
-            if os.path.abspath(target_cache_path) == os.path.abspath(cache_path):
-                continue
-
-            os.makedirs(target_dir, exist_ok=True)
-            wav_src = cache_path
-            wav_dst = target_cache_path
-            meta_src = _cache_meta_path(cache_path)
-            meta_dst = _cache_meta_path(target_cache_path)
-
-            try:
-                if os.path.exists(wav_src):
-                    if os.path.exists(wav_dst):
-                        os.remove(wav_src)
-                    else:
-                        shutil.move(wav_src, wav_dst)
-                if os.path.exists(meta_src):
-                    meta_payload = _load_json_file(meta_src, {})
-                    if isinstance(meta_payload, dict):
-                        meta_payload["cache_path"] = target_cache_path
-                    if os.path.exists(meta_dst):
-                        os.remove(meta_src)
-                        if isinstance(meta_payload, dict) and meta_payload:
-                            _write_json_file(meta_dst, meta_payload)
-                    else:
-                        _write_json_file(meta_dst, meta_payload if isinstance(meta_payload, dict) else {})
-                        os.remove(meta_src)
-                renamed_paths[cache_path] = target_cache_path
-            except Exception:
-                _log_warning(
-                    "tts_rename_cache_source_migrate_entry_failed",
-                    old_cache_path=old_cache_path,
-                    new_cache_path=new_cache_path,
-                )
-                continue
-
-    if not renamed_paths:
-        return
-
-    pending_items = _load_json_file(PENDING_GEMINI_QUEUE_PATH, [])
-    if isinstance(pending_items, list):
-        changed = False
-        for item in pending_items:
-            if not isinstance(item, dict):
-                continue
-            old_cache_path = str(item.get("cache_path") or "").strip()
-            if old_cache_path in renamed_paths:
-                item["cache_path"] = renamed_paths[old_cache_path]
-                changed = True
-        if changed:
-            _write_json_file(PENDING_GEMINI_QUEUE_PATH, pending_items)
+    _migrate_flat_root_cache_layout_impl(
+        legacy_word_cache_wrapper_dir=LEGACY_WORD_CACHE_WRAPPER_DIR,
+        global_word_cache_dir=GLOBAL_WORD_CACHE_DIR,
+        shared_word_cache_dir=SHARED_WORD_CACHE_DIR,
+        source_word_cache_root_dir=SOURCE_WORD_CACHE_ROOT_DIR,
+        load_json_file=_load_json_file,
+        cache_meta_path=_cache_meta_path,
+        normalize_source_path=_normalize_source_path,
+        filename_letter_bucket=_filename_letter_bucket,
+        source_bucket_name=_source_bucket_name,
+        write_json_file=_write_json_file,
+        pending_gemini_queue_path=PENDING_ONLINE_TTS_QUEUE_PATH,
+        log_warning=_log_warning,
+    )
 
 
 def _migrate_legacy_word_wrapper_layout():
-    if not os.path.isdir(LEGACY_WORD_CACHE_WRAPPER_DIR):
-        return
-
-    renamed_paths = {}
-    move_plan = [
-        (os.path.join(LEGACY_WORD_CACHE_WRAPPER_DIR, "sources"), SOURCE_WORD_CACHE_ROOT_DIR),
-        (os.path.join(LEGACY_WORD_CACHE_WRAPPER_DIR, "global"), SHARED_WORD_CACHE_DIR),
-    ]
-    for legacy_dir, target_dir in move_plan:
-        if not os.path.isdir(legacy_dir):
-            continue
-        os.makedirs(target_dir, exist_ok=True)
-        for root, dirs, files in os.walk(legacy_dir, topdown=False):
-            rel_root = os.path.relpath(root, legacy_dir)
-            current_target_root = target_dir if rel_root == "." else os.path.join(target_dir, rel_root)
-            os.makedirs(current_target_root, exist_ok=True)
-            for name in files:
-                src = os.path.join(root, name)
-                dst = os.path.join(current_target_root, name)
-                try:
-                    if os.path.exists(dst):
-                        os.remove(src)
-                    else:
-                        shutil.move(src, dst)
-                    if name.lower().endswith(".wav"):
-                        renamed_paths[src] = dst
-                except Exception:
-                    continue
-            for name in dirs:
-                old_dir = os.path.join(root, name)
-                try:
-                    if os.path.isdir(old_dir) and not os.listdir(old_dir):
-                        os.rmdir(old_dir)
-                except Exception:
-                    pass
-        try:
-            if os.path.isdir(legacy_dir) and not os.listdir(legacy_dir):
-                os.rmdir(legacy_dir)
-        except Exception:
-            pass
-
-    pending_items = _load_json_file(PENDING_GEMINI_QUEUE_PATH, [])
-    if isinstance(pending_items, list) and renamed_paths:
-        changed = False
-        for item in pending_items:
-            if not isinstance(item, dict):
-                continue
-            old_cache_path = str(item.get("cache_path") or "").strip()
-            if old_cache_path in renamed_paths:
-                item["cache_path"] = renamed_paths[old_cache_path]
-                changed = True
-        if changed:
-            _write_json_file(PENDING_GEMINI_QUEUE_PATH, pending_items)
-
-    try:
-        if os.path.isdir(LEGACY_WORD_CACHE_WRAPPER_DIR) and not os.listdir(LEGACY_WORD_CACHE_WRAPPER_DIR):
-            os.rmdir(LEGACY_WORD_CACHE_WRAPPER_DIR)
-    except Exception:
-        pass
+    _migrate_legacy_word_wrapper_layout_impl(
+        legacy_word_cache_wrapper_dir=LEGACY_WORD_CACHE_WRAPPER_DIR,
+        source_word_cache_root_dir=SOURCE_WORD_CACHE_ROOT_DIR,
+        shared_word_cache_dir=SHARED_WORD_CACHE_DIR,
+        load_json_file=_load_json_file,
+        write_json_file=_write_json_file,
+        pending_gemini_queue_path=PENDING_ONLINE_TTS_QUEUE_PATH,
+    )
 
 
 def _collapse_existing_lightweight_source_caches():
-    if not os.path.isdir(SOURCE_WORD_CACHE_ROOT_DIR):
-        return
-    for root, _, names in os.walk(SOURCE_WORD_CACHE_ROOT_DIR):
-        for name in names:
-            if not name.lower().endswith(".wav.json"):
-                continue
-            meta_path = os.path.join(root, name)
-            cache_path = meta_path[:-5]
-            metadata = _load_json_file(meta_path, {})
-            if not isinstance(metadata, dict):
-                continue
-            source_path = _normalize_source_path(metadata.get("source_path"))
-            if source_path == "shared":
-                continue
-            text_value = _infer_text_from_cache_filename(cache_path, metadata)
-            if not text_value:
-                continue
-            linked_shared = str(metadata.get("linked_shared_path") or "").strip()
-            backend = str(metadata.get("backend") or "").strip().lower()
-            desired_backend = str(metadata.get("desired_backend") or "").strip().lower()
-            if linked_shared:
-                _alias_source_cache_to_shared(
-                    text_value,
-                    source_path=source_path,
-                    shared_path=linked_shared,
-                    backend=backend or _current_online_provider(),
-                    desired_backend=desired_backend or backend or _current_online_provider(),
-                    metadata=metadata,
-                    cache_path=cache_path,
-                )
-                continue
-            playable_path = _resolve_cache_audio_path(cache_path)
-            if not playable_path:
-                continue
-            try:
-                _alias_source_cache_to_shared(
-                    text_value,
-                    source_path=source_path,
-                    backend=backend or _current_online_provider(),
-                    desired_backend=desired_backend or backend or _current_online_provider(),
-                    metadata=metadata,
-                    cache_path=cache_path,
-                )
-            except Exception:
-                continue
+    _collapse_existing_lightweight_source_caches_impl(
+        source_word_cache_root_dir=SOURCE_WORD_CACHE_ROOT_DIR,
+        load_json_file=_load_json_file,
+        normalize_source_path=_normalize_source_path,
+        infer_text_from_cache_filename=_infer_text_from_cache_filename,
+        current_online_provider=_current_online_provider,
+        resolve_cache_audio_path=_resolve_cache_audio_path,
+        alias_source_cache_to_shared=_alias_source_cache_to_shared,
+    )
 
 
 def _collapse_all_source_cache_entities_to_aliases():
-    if not os.path.isdir(SOURCE_WORD_CACHE_ROOT_DIR):
-        return 0
-    collapsed = 0
-    for root, _, names in os.walk(SOURCE_WORD_CACHE_ROOT_DIR):
-        for name in names:
-            if not name.lower().endswith(".wav"):
-                continue
-            cache_path = os.path.join(root, name)
-            metadata = _load_cache_metadata(cache_path)
-            if not isinstance(metadata, dict):
-                continue
-            source_path = _normalize_source_path(metadata.get("source_path"))
-            if source_path == "shared":
-                continue
-            text_value = _infer_text_from_cache_filename(cache_path, metadata)
-            if not text_value:
-                continue
-            backend = str(metadata.get("backend") or "").strip().lower()
-            desired_backend = str(metadata.get("desired_backend") or backend or _current_online_provider()).strip().lower()
-            try:
-                alias_path = _alias_source_cache_to_shared(
-                    text_value,
-                    source_path=source_path,
-                    backend=backend or _current_online_provider(),
-                    desired_backend=desired_backend or backend or _current_online_provider(),
-                    metadata=metadata,
-                    cache_path=cache_path,
-                )
-                if alias_path:
-                    collapsed += 1
-            except Exception:
-                continue
-    return collapsed
-
-
-def _cache_group_key(cache_path, metadata):
-    stem = os.path.splitext(os.path.basename(str(cache_path or "").strip()))[0]
-    base = stem.rsplit("_", 1)[0] if "_" in stem else stem
-    filename_guess = _normalize_text(str(base or "").replace("_", " "), ensure_sentence_end=False)
-    if filename_guess:
-        return filename_guess.rstrip(".!?;:").casefold()
-    text_value = _normalize_text((metadata or {}).get("text"), ensure_sentence_end=False)
-    if text_value:
-        return text_value.rstrip(".!?;:").casefold()
-    return str(base or "").rstrip(".!?;:").casefold()
+    return _collapse_all_source_cache_entities_to_aliases_impl(
+        source_word_cache_root_dir=SOURCE_WORD_CACHE_ROOT_DIR,
+        load_cache_metadata=_load_cache_metadata,
+        normalize_source_path=_normalize_source_path,
+        infer_text_from_cache_filename=_infer_text_from_cache_filename,
+        current_online_provider=_current_online_provider,
+        alias_source_cache_to_shared=_alias_source_cache_to_shared,
+    )
 
 
 def _infer_text_from_cache_filename(cache_path, metadata=None):
@@ -939,171 +756,33 @@ def _infer_text_from_cache_filename(cache_path, metadata=None):
     return _normalize_text(guess, ensure_sentence_end=False)
 
 
-def _cache_group_source_bucket(cache_path):
-    try:
-        rel_path = os.path.relpath(str(cache_path or "").strip(), SOURCE_WORD_CACHE_ROOT_DIR)
-    except Exception:
-        return ""
-    parts = rel_path.split(os.sep)
-    return parts[0] if parts else ""
-
-
-def _cache_sort_key(cache_path, metadata):
-    metadata = dict(metadata or {})
-    desired_backend = str(metadata.get("desired_backend") or "").strip().lower()
-    backend = str(metadata.get("backend") or "").strip().lower()
-    updated_at = int(metadata.get("updated_at") or 0)
-    pending = 1 if _is_pending_gemini(cache_path) else 0
-    playable = 1 if _resolve_cache_audio_path(cache_path) else 0
-    actual_wav = 1 if os.path.exists(cache_path) else 0
-    try:
-        latest_mtime = max(
-            os.path.getmtime(path)
-            for path in (cache_path, _cache_meta_path(cache_path))
-            if os.path.exists(path)
-        )
-    except Exception:
-        latest_mtime = 0
-    return (
-        1 if _is_online_backend(desired_backend) else 0,
-        1 if backend == desired_backend and _is_online_backend(backend) else 0,
-        pending,
-        playable,
-        actual_wav,
-        updated_at,
-        latest_mtime,
+def _cleanup_duplicate_source_cache_entries():
+    return _cleanup_duplicate_source_cache_entries_impl(
+        source_word_cache_root_dir=SOURCE_WORD_CACHE_ROOT_DIR,
+        shared_word_cache_dir=SHARED_WORD_CACHE_DIR,
+        load_cache_metadata=_load_cache_metadata,
+        normalize_text=_normalize_text,
+        normalize_source_path=_normalize_source_path,
+        is_pending_gemini=_is_pending_gemini,
+        resolve_cache_audio_path=_resolve_cache_audio_path,
+        cache_meta_path=_cache_meta_path,
+        is_online_backend=_is_online_backend,
+        log_warning=_log_warning,
+        remove_cache_metadata=_remove_cache_metadata,
+        remove_pending_gemini=_remove_pending_gemini,
+        save_cache_metadata=_save_cache_metadata,
+        enqueue_existing_cache_for_online_replacement=_enqueue_existing_cache_for_gemini_replacement,
     )
 
 
-def _cleanup_duplicate_source_cache_entries():
-    def _collect_grouped(root_dir, root_kind):
-        grouped = {}
-        if not os.path.isdir(root_dir):
-            return grouped
-        for root, _, names in os.walk(root_dir):
-            for name in names:
-                lower_name = name.lower()
-                if lower_name.endswith(".wav"):
-                    cache_path = os.path.join(root, name)
-                elif lower_name.endswith(".wav.json"):
-                    cache_path = os.path.join(root, name[:-5])
-                else:
-                    continue
-                metadata = _load_cache_metadata(cache_path)
-                bucket = _cache_group_source_bucket(cache_path) if root_kind == "source" else "shared"
-                key = _cache_group_key(cache_path, metadata)
-                if not (bucket and key):
-                    continue
-                grouped.setdefault((bucket, key), {})[cache_path] = metadata
-        return grouped
-
-    def _remove_cache_entry(cache_path):
-        removed_local = 0
-        try:
-            if os.path.exists(cache_path):
-                os.remove(cache_path)
-                removed_local += 1
-        except Exception as exc:
-            _log_warning("tts_remove_cache_entry_audio_failed", cache_path=cache_path, error=exc)
-        meta_path = _cache_meta_path(cache_path)
-        try:
-            if os.path.exists(meta_path):
-                os.remove(meta_path)
-                removed_local += 1
-        except Exception as exc:
-            _log_warning("tts_remove_cache_entry_meta_failed", meta_path=meta_path, error=exc)
-        _remove_cache_metadata(cache_path)
-        _remove_pending_gemini(cache_path)
-        return removed_local
-
-    if not os.path.isdir(SOURCE_WORD_CACHE_ROOT_DIR) and not os.path.isdir(SHARED_WORD_CACHE_DIR):
-        return 0
-
-    removed = 0
-    shared_path_rewrites = {}
-    shared_grouped = _collect_grouped(SHARED_WORD_CACHE_DIR, "shared")
-    for (_bucket, _key), item_map in shared_grouped.items():
-        cache_paths = list(item_map.keys())
-        if len(cache_paths) <= 1:
-            continue
-        keep_path = max(cache_paths, key=lambda path: _cache_sort_key(path, item_map.get(path)))
-        for cache_path in cache_paths:
-            if cache_path == keep_path:
-                continue
-            shared_path_rewrites[cache_path] = keep_path
-            removed += _remove_cache_entry(cache_path)
-
-    if shared_path_rewrites and os.path.isdir(SOURCE_WORD_CACHE_ROOT_DIR):
-        for root, _, names in os.walk(SOURCE_WORD_CACHE_ROOT_DIR):
-            for name in names:
-                if not name.lower().endswith(".wav.json"):
-                    continue
-                cache_path = os.path.join(root, name[:-5])
-                metadata = _load_cache_metadata(cache_path)
-                if not isinstance(metadata, dict):
-                    continue
-                linked_shared = str(metadata.get("linked_shared_path") or "").strip()
-                rewritten = shared_path_rewrites.get(linked_shared)
-                if not rewritten:
-                    continue
-                metadata["linked_shared_path"] = rewritten
-                _save_cache_metadata(cache_path, metadata)
-
-    source_grouped = _collect_grouped(SOURCE_WORD_CACHE_ROOT_DIR, "source")
-    for (_bucket, _key), item_map in source_grouped.items():
-        cache_paths = list(item_map.keys())
-        if len(cache_paths) <= 1:
-            continue
-        keep_path = max(cache_paths, key=lambda path: _cache_sort_key(path, item_map.get(path)))
-        keep_metadata = item_map.get(keep_path) or {}
-        keep_source = _normalize_source_path(keep_metadata.get("source_path"))
-        keep_text = _infer_text_from_cache_filename(keep_path, keep_metadata)
-        pending_seen = False
-        for cache_path in cache_paths:
-            if cache_path == keep_path:
-                continue
-            pending_seen = pending_seen or _is_pending_gemini(cache_path)
-            removed += _remove_cache_entry(cache_path)
-        if pending_seen and keep_text and keep_source and not _is_pending_gemini(keep_path):
-            keep_backend = str(keep_metadata.get("backend") or "").strip().lower()
-            keep_desired = str(keep_metadata.get("desired_backend") or "").strip().lower()
-            if keep_backend != keep_desired and _is_online_backend(keep_desired):
-                _enqueue_existing_cache_for_gemini_replacement(keep_text, keep_path, source_path=keep_source)
-    return removed
-
-
 def _normalize_cache_metadata_texts():
-    roots = []
-    if os.path.isdir(SHARED_WORD_CACHE_DIR):
-        roots.append(("shared", SHARED_WORD_CACHE_DIR))
-    if os.path.isdir(SOURCE_WORD_CACHE_ROOT_DIR):
-        roots.append(("source", SOURCE_WORD_CACHE_ROOT_DIR))
-    if not roots:
-        return 0
-
-    updated = 0
-    for root_kind, root_dir in roots:
-        for root, _, names in os.walk(root_dir):
-            for name in names:
-                if not name.lower().endswith(".wav.json"):
-                    continue
-                cache_path = os.path.join(root, name[:-5])
-                metadata = _load_cache_metadata(cache_path)
-                if not isinstance(metadata, dict):
-                    continue
-                normalized_guess = _infer_text_from_cache_filename(cache_path, {})
-                if not normalized_guess:
-                    continue
-                payload = dict(metadata)
-                current_text = _normalize_text(payload.get("text"), ensure_sentence_end=False)
-                if current_text == normalized_guess and payload.get("text") == normalized_guess:
-                    continue
-                payload["text"] = normalized_guess
-                if root_kind == "shared":
-                    payload["source_path"] = "shared"
-                _save_cache_metadata(cache_path, payload)
-                updated += 1
-    return updated
+    return _normalize_cache_metadata_texts_impl(
+        shared_word_cache_dir=SHARED_WORD_CACHE_DIR,
+        source_word_cache_root_dir=SOURCE_WORD_CACHE_ROOT_DIR,
+        load_cache_metadata=_load_cache_metadata,
+        save_cache_metadata=_save_cache_metadata,
+        normalize_text=_normalize_text,
+    )
 
 
 def _write_json_file(path, payload):
@@ -1125,13 +804,12 @@ def _migrate_pending_queue_path():
 
 
 def _get_cache_metadata_store():
-    global _cache_metadata_store
-    if _cache_metadata_store is None:
-        _cache_metadata_store = CacheMetadataStore(
+    if _runtime_state.cache_metadata_store is None:
+        _runtime_state.cache_metadata_store = CacheMetadataStore(
             canonicalize=_canonicalize_cache_path,
             normalize_source_path=_normalize_source_path,
         )
-    return _cache_metadata_store
+    return _runtime_state.cache_metadata_store
 
 
 def _load_cache_metadata(cache_path):
@@ -1501,6 +1179,7 @@ def _dedupe_pending_gemini_locked(preferred_provider=None):
 
 
 def dedupe_pending_online_queue(preferred_provider=None):
+    _ensure_runtime_initialized()
     with _pending_gemini_lock:
         changed = _dedupe_pending_gemini_locked(preferred_provider=preferred_provider)
         if changed:
@@ -1523,12 +1202,12 @@ def _is_pending_gemini(cache_path):
 
 
 def set_preferred_pending_source(source_path=None):
-    global _preferred_pending_source
-    _preferred_pending_source = _normalize_source_path(source_path)
+    _ensure_runtime_initialized()
+    _runtime_state.preferred_pending_source = _normalize_source_path(source_path)
 
 
 def _next_pending_gemini_item():
-    preferred_source = _preferred_pending_source
+    preferred_source = _runtime_state.preferred_pending_source
     with _pending_gemini_lock:
         pending_items = list(_pending_gemini_replacements.items())
     if not pending_items:
@@ -1644,6 +1323,7 @@ def _save_word_cache_file(cache_path, wav_path, *, text=None, source_path=None, 
 
 
 def cleanup_manual_session_cache():
+    _ensure_runtime_initialized()
     with _manual_session_cache_lock:
         paths = list(_manual_session_cache_paths)
         _manual_session_cache_paths.clear()
@@ -1796,6 +1476,7 @@ def rebind_manual_session_cache_to_source(texts, source_path):
 
 
 def cleanup_cache_for_source_path(source_path):
+    _ensure_runtime_initialized()
     target = _normalize_source_path(source_path)
     if not target:
         return 0
@@ -1852,6 +1533,7 @@ def cleanup_cache_for_source_path(source_path):
 
 
 def cleanup_word_audio_cache(text, source_path=None):
+    _ensure_runtime_initialized()
     normalized = _normalize_text(text, ensure_sentence_end=False)
     if not normalized:
         return False
@@ -1877,6 +1559,7 @@ def cleanup_word_audio_cache(text, source_path=None):
 
 
 def rename_cache_source_path(old_source_path, new_source_path):
+    _ensure_runtime_initialized()
     old_source = _normalize_source_path(old_source_path)
     new_source = _normalize_source_path(new_source_path)
     if not old_source or not new_source or old_source == new_source:
@@ -2115,6 +1798,7 @@ def _ensure_source_gemini_cache(text, source_path=None):
 
 
 def has_cached_word_audio(text, source_path=None):
+    _ensure_runtime_initialized()
     override_backend = get_word_backend_override(text, source_path=source_path)
     if override_backend in {"kokoro", "piper"}:
         cache_path = _word_cache_path(text, source_path=source_path)
@@ -2125,6 +1809,7 @@ def has_cached_word_audio(text, source_path=None):
 
 
 def get_word_audio_cache_info(text, source_path=None):
+    _ensure_runtime_initialized()
     override_backend = get_word_backend_override(text, source_path=source_path)
     if override_backend in {"kokoro", "piper"}:
         cache_path = _word_cache_path(text, source_path=source_path)
@@ -2161,6 +1846,7 @@ def get_word_audio_cache_info(text, source_path=None):
 
 
 def export_shared_audio_cache_package(package_path):
+    _ensure_runtime_initialized()
     return _export_shared_audio_cache_package_impl(
         package_path,
         get_export_entries=_shared_cache_export_entries,
@@ -2174,6 +1860,7 @@ def export_shared_audio_cache_package(package_path):
 
 
 def import_shared_audio_cache_package(package_path):
+    _ensure_runtime_initialized()
     return _import_shared_audio_cache_package_impl(
         package_path,
         shared_cache_package_manifest=SHARED_CACHE_PACKAGE_MANIFEST,
@@ -2192,10 +1879,12 @@ def import_shared_audio_cache_package(package_path):
 
 
 def get_recent_wrong_cache_source():
+    _ensure_runtime_initialized()
     return RECENT_WRONG_SOURCE_KEY
 
 
 def queue_word_audio_generation(text, source_path=None):
+    _ensure_runtime_initialized()
     normalized = _normalize_text(text, ensure_sentence_end=False)
     if not normalized:
         return False
@@ -2245,6 +1934,7 @@ def _copy_cache_between_sources(text, *, from_source_path=None, to_source_path=N
 
 
 def promote_word_audio_to_recent_wrong(text, source_path=None):
+    _ensure_runtime_initialized()
     normalized = _normalize_text(text, ensure_sentence_end=False)
     if not normalized:
         return False
@@ -2285,17 +1975,16 @@ def get_backend_status(token):
 
 
 def _stop_locked():
-    global _current_wav
     try:
         winsound.PlaySound(None, winsound.SND_PURGE)
     except Exception as exc:
         _log_warning("tts_stop_purge_failed", error=exc)
-    if _current_wav:
+    if _runtime_state.current_wav:
         try:
-            os.remove(_current_wav)
+            os.remove(_runtime_state.current_wav)
         except Exception as exc:
-            _log_warning("tts_stop_temp_remove_failed", path=_current_wav, error=exc)
-        _current_wav = None
+            _log_warning("tts_stop_temp_remove_failed", path=_runtime_state.current_wav, error=exc)
+        _runtime_state.current_wav = None
 
 
 def _play_wav_async(path):
@@ -2332,211 +2021,111 @@ def _show_error_once(message):
             return
         _shown_errors.add(message)
     try:
-        messagebox.showerror("Speech Error", f"Error: {message}")
-    except Exception:
-        pass
+        if callable(_runtime_state.error_notifier):
+            _runtime_state.error_notifier(str(message))
+    except Exception as exc:
+        _log_warning("tts_error_notifier_failed", message=message, error=exc)
     _log_error("tts_user_visible_error", message=message)
 
 
-def _extract_error_message(http_error):
-    try:
-        raw = http_error.read().decode("utf-8", errors="ignore")
-    except Exception:
-        return str(http_error)
-    try:
-        data = json.loads(raw)
-    except Exception:
-        return raw or str(http_error)
-    error = data.get("error") or {}
-    return str(error.get("message") or data.get("message") or raw or http_error)
+def set_error_notifier(notifier):
+    _runtime_state.error_notifier = notifier if callable(notifier) else None
+
+
+def _initialize_runtime_once():
+    if _runtime_state.runtime_initialized:
+        return
+    with _runtime_state.runtime_init_lock:
+        if _runtime_state.runtime_initialized:
+            return
+        _migrate_legacy_word_wrapper_layout()
+        _migrate_flat_root_cache_layout()
+        _migrate_pending_queue_path()
+        _load_pending_gemini_queue()
+        _cleanup_duplicate_source_cache_entries()
+        _normalize_cache_metadata_texts()
+        _collapse_existing_lightweight_source_caches()
+        _collapse_all_source_cache_entities_to_aliases()
+        _start_pending_gemini_worker()
+        _runtime_state.runtime_initialized = True
+
+
+def _ensure_runtime_initialized():
+    if not _runtime_state.runtime_initialized:
+        _initialize_runtime_once()
 
 
 def _request_gemini_tts(text, *, short_text, api_key=None, timeout=ONLINE_TTS_REQUEST_TIMEOUT_SECONDS):
-    api_key = str(api_key or get_tts_api_key()).strip()
-    if not api_key:
-        raise RuntimeError("TTS API key is empty.")
-    spoken_text = _normalize_tts_spoken_text(text)
-
-    prompt = TTS_STYLE_SHORT if short_text else TTS_STYLE_LONG
-    payload = {
-        "contents": [{"parts": [{"text": f"{prompt}\n\nText:\n{spoken_text}"}]}],
-        "generationConfig": {
-            "responseModalities": ["AUDIO"],
-            "speechConfig": {
-                "voiceConfig": {
-                    "prebuiltVoiceConfig": {
-                        "voiceName": TTS_VOICE_NAME,
-                    }
-                }
-            },
-        },
-    }
-    req = urllib.request.Request(
-        TTS_URL,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "x-goog-api-key": api_key,
-            "Content-Type": "application/json",
-        },
-        method="POST",
+    return _request_gemini_tts_impl(
+        text,
+        short_text=short_text,
+        api_key=str(api_key or get_tts_api_key()).strip(),
+        timeout=timeout,
+        url=TTS_URL,
+        voice_name=TTS_VOICE_NAME,
+        style_short=TTS_STYLE_SHORT,
+        style_long=TTS_STYLE_LONG,
+        normalize_text=_normalize_tts_spoken_text,
+        log_info=_log_info,
+        log_error=_log_error,
     )
-    try:
-        _log_info("tts_request_start", provider="gemini", short_text=short_text, timeout=timeout, text=spoken_text[:120])
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8", errors="ignore"))
-    except urllib.error.HTTPError as e:
-        _log_error("tts_request_http_error", provider="gemini", short_text=short_text, error=_extract_error_message(e))
-        raise RuntimeError(_extract_error_message(e)) from e
-    except urllib.error.URLError as e:
-        _log_error("tts_request_url_error", provider="gemini", short_text=short_text, error=e.reason)
-        raise RuntimeError(f"Gemini TTS request failed: {e.reason}") from e
-    except Exception as e:
-        _log_error("tts_request_error", provider="gemini", short_text=short_text, error=e)
-        raise RuntimeError(f"Gemini TTS request failed: {e}") from e
 
 
 def _request_elevenlabs_tts(text, *, short_text, api_key=None, timeout=ONLINE_TTS_REQUEST_TIMEOUT_SECONDS):
-    api_key = str(api_key or get_tts_api_key()).strip()
-    if not api_key:
-        raise RuntimeError("TTS API key is empty.")
-    spoken_text = _normalize_tts_spoken_text(text)
-
-    payload = {
-        "text": spoken_text,
-        "model_id": ELEVENLABS_MODEL_ID,
-        "voice_settings": {
-            "stability": 0.45,
-            "similarity_boost": 0.75,
-            "style": 0.1 if short_text else 0.25,
-            "use_speaker_boost": True,
-        },
-    }
-    req = urllib.request.Request(
-        ELEVENLABS_URL,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "xi-api-key": api_key,
-            "Content-Type": "application/json",
-            "Accept": "audio/pcm",
-        },
-        method="POST",
+    return _request_elevenlabs_tts_impl(
+        text,
+        short_text=short_text,
+        api_key=str(api_key or get_tts_api_key()).strip(),
+        timeout=timeout,
+        url=ELEVENLABS_URL,
+        model_id=ELEVENLABS_MODEL_ID,
+        normalize_text=_normalize_tts_spoken_text,
+        log_info=_log_info,
+        log_error=_log_error,
     )
-    try:
-        _log_info("tts_request_start", provider="elevenlabs", short_text=short_text, timeout=timeout, text=spoken_text[:120])
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            return response.read()
-    except urllib.error.HTTPError as e:
-        _log_error("tts_request_http_error", provider="elevenlabs", short_text=short_text, error=_extract_error_message(e))
-        raise RuntimeError(_extract_error_message(e)) from e
-    except urllib.error.URLError as e:
-        _log_error("tts_request_url_error", provider="elevenlabs", short_text=short_text, error=e.reason)
-        raise RuntimeError(f"ElevenLabs TTS request failed: {e.reason}") from e
-    except Exception as e:
-        _log_error("tts_request_error", provider="elevenlabs", short_text=short_text, error=e)
-        raise RuntimeError(f"ElevenLabs TTS request failed: {e}") from e
 
 
 def _request_online_tts(text, *, short_text, provider=None, api_key=None, timeout=ONLINE_TTS_REQUEST_TIMEOUT_SECONDS):
-    backend = str(provider or _primary_online_provider()).strip().lower()
-    if backend == "elevenlabs":
-        return _request_elevenlabs_tts(text, short_text=short_text, api_key=api_key, timeout=timeout), "elevenlabs"
-    return _request_gemini_tts(text, short_text=short_text, api_key=api_key, timeout=timeout), "gemini"
-
-
-def _extract_pcm_bytes(data):
-    candidates = data.get("candidates") or []
-    for candidate in candidates:
-        content = candidate.get("content") or {}
-        for part in content.get("parts") or []:
-            inline = part.get("inlineData") or {}
-            encoded = inline.get("data")
-            mime_type = str(inline.get("mimeType") or "")
-            if encoded and "pcm" in mime_type:
-                return base64.b64decode(encoded)
-    raise RuntimeError("Gemini TTS returned no audio.")
+    return _request_online_tts_impl(
+        text,
+        short_text=short_text,
+        provider=provider,
+        api_key=api_key,
+        timeout=timeout,
+        primary_online_provider=_primary_online_provider,
+        request_gemini=_request_gemini_tts,
+        request_elevenlabs=_request_elevenlabs_tts,
+    )
 
 
 def validate_gemini_tts_api_key(api_key, timeout=25):
-    if not str(api_key or "").strip():
-        raise RuntimeError("TTS API key is empty.")
-    prompt = TTS_STYLE_SHORT
-    payload = {
-        "contents": [{"parts": [{"text": f"{prompt}\n\nText:\nTest"}]}],
-        "generationConfig": {
-            "responseModalities": ["AUDIO"],
-            "speechConfig": {
-                "voiceConfig": {
-                    "prebuiltVoiceConfig": {
-                        "voiceName": TTS_VOICE_NAME,
-                    }
-                }
-            },
-        },
-    }
-    req = urllib.request.Request(
-        TTS_URL,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "x-goog-api-key": str(api_key).strip(),
-            "Content-Type": "application/json",
-        },
-        method="POST",
+    return _validate_gemini_tts_api_key_impl(
+        api_key,
+        timeout=timeout,
+        url=TTS_URL,
+        voice_name=TTS_VOICE_NAME,
+        style_short=TTS_STYLE_SHORT,
+        extract_pcm=_extract_pcm_bytes,
     )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            data = json.loads(response.read().decode("utf-8", errors="ignore"))
-    except urllib.error.HTTPError as e:
-        raise RuntimeError(_extract_error_message(e)) from e
-    except urllib.error.URLError as e:
-        raise RuntimeError(f"Gemini TTS request failed: {e.reason}") from e
-    except Exception as e:
-        raise RuntimeError(f"Gemini TTS request failed: {e}") from e
-    _extract_pcm_bytes(data)
-    return True
 
 
 def validate_elevenlabs_tts_api_key(api_key, timeout=25):
-    if not str(api_key or "").strip():
-        raise RuntimeError("TTS API key is empty.")
-    payload = {
-        "text": "Test",
-        "model_id": ELEVENLABS_MODEL_ID,
-        "voice_settings": {
-            "stability": 0.45,
-            "similarity_boost": 0.75,
-            "style": 0.1,
-            "use_speaker_boost": True,
-        },
-    }
-    req = urllib.request.Request(
-        ELEVENLABS_URL,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "xi-api-key": str(api_key).strip(),
-            "Content-Type": "application/json",
-            "Accept": "audio/pcm",
-        },
-        method="POST",
+    return _validate_elevenlabs_tts_api_key_impl(
+        api_key,
+        timeout=timeout,
+        url=ELEVENLABS_URL,
+        model_id=ELEVENLABS_MODEL_ID,
     )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            data = response.read()
-    except urllib.error.HTTPError as e:
-        raise RuntimeError(_extract_error_message(e)) from e
-    except urllib.error.URLError as e:
-        raise RuntimeError(f"ElevenLabs TTS request failed: {e.reason}") from e
-    except Exception as e:
-        raise RuntimeError(f"ElevenLabs TTS request failed: {e}") from e
-    if not data:
-        raise RuntimeError("ElevenLabs TTS returned no audio.")
-    return True
 
 
 def validate_tts_api_key(api_key, provider, timeout=25):
-    backend = str(provider or "").strip().lower()
-    if backend == "elevenlabs":
-        return validate_elevenlabs_tts_api_key(api_key, timeout=timeout)
-    return validate_gemini_tts_api_key(api_key, timeout=timeout)
+    return _validate_tts_api_key_impl(
+        api_key,
+        provider,
+        timeout=timeout,
+        validate_gemini=validate_gemini_tts_api_key,
+        validate_elevenlabs=validate_elevenlabs_tts_api_key,
+    )
 
 
 def _write_pcm_to_wav_path(pcm_bytes, sample_rate, volume):
@@ -2576,9 +2165,8 @@ def _write_float_audio_to_wav_path(audio, sample_rate, volume):
 
 
 def _ensure_kokoro():
-    global _kokoro
-    if _kokoro is not None:
-        return _kokoro
+    if _runtime_state.kokoro is not None:
+        return _runtime_state.kokoro
     if not kokoro_ready():
         model_path, voices_path = get_kokoro_paths()
         raise RuntimeError(
@@ -2586,13 +2174,13 @@ def _ensure_kokoro():
             f"Expected:\n{model_path}\n{voices_path}"
         )
     with _kokoro_lock:
-        if _kokoro is not None:
-            return _kokoro
+        if _runtime_state.kokoro is not None:
+            return _runtime_state.kokoro
         from kokoro_onnx import Kokoro
 
         model_path, voices_path = get_kokoro_paths()
-        _kokoro = Kokoro(model_path=model_path, voices_path=voices_path)
-        return _kokoro
+        _runtime_state.kokoro = Kokoro(model_path=model_path, voices_path=voices_path)
+        return _runtime_state.kokoro
 
 
 def _ensure_piper_voice(voice_id=None):
@@ -2849,215 +2437,45 @@ def _synthesize_to_wav(text, volume, rate_ratio, *, short_text=False, source_pat
 
 
 def _start_pending_gemini_worker():
-    global _pending_gemini_worker_running
     with _pending_gemini_lock:
-        if _pending_gemini_worker_running or not _pending_gemini_replacements:
+        if _runtime_state.pending_gemini_worker_running or not _pending_gemini_replacements:
             return
-        _pending_gemini_worker_running = True
+        _runtime_state.pending_gemini_worker_running = True
     _set_gemini_queue_status(worker_running=True)
     _refresh_gemini_queue_status_counts()
-    current_status = _online_queue_manager.get_status()
+    current_status = _runtime_state.online_queue_manager.get_status()
     if current_status.get("state") in {"idle", ""}:
-        _online_queue_manager.set_status(state="ok")
+        _runtime_state.online_queue_manager.set_status(state="ok")
 
     def _worker():
-        global _pending_gemini_worker_running
-        try:
-            while True:
-                next_item = _next_pending_gemini_item()
-                if not next_item:
-                    return
-                cache_path_local, item = next_item
-                if not isinstance(item, dict):
-                    _remove_pending_gemini(cache_path_local)
-                    continue
-                normalized_text = _normalize_text(item.get("text"), ensure_sentence_end=False)
-                source_path = str(item.get("source_path") or "").strip() or None
-                if not normalized_text:
-                    _remove_pending_gemini(cache_path_local)
-                    continue
-                desired_backend = str(item.get("desired_backend") or _current_online_provider()).strip().lower()
-                if desired_backend not in {"gemini", "elevenlabs"}:
-                    desired_backend = _current_online_provider()
-                try:
-                    _wait_for_gemini_queue_slot(provider=desired_backend)
-                    _log_info(
-                        "tts_queue_item_start",
-                        provider=desired_backend,
-                        cache_path=cache_path_local,
-                        source_path=source_path or "",
-                        text=normalized_text[:120],
-                    )
-                    wav_path, _label, _can_cache = (
-                        _synthesize_with_elevenlabs(normalized_text, volume=1.0, short_text=True)
-                        if desired_backend == "elevenlabs"
-                        else _synthesize_with_gemini(normalized_text, volume=1.0, short_text=True)
-                    )
-                    _record_queue_success(desired_backend)
-                    _set_gemini_queue_status(
-                        state="ok",
-                        next_retry_at=0.0,
-                        last_success_at=time.time(),
-                        last_error="",
-                    )
-                    try:
-                        _save_word_cache_file(
-                            cache_path_local,
-                            wav_path,
-                            text=normalized_text,
-                            source_path=source_path,
-                            backend=desired_backend,
-                            desired_backend=desired_backend,
-                        )
-                    finally:
-                        try:
-                            os.remove(wav_path)
-                        except Exception:
-                            pass
-                    _remove_pending_gemini(cache_path_local)
-                    _log_info("tts_queue_item_done", provider=desired_backend, cache_path=cache_path_local)
-                except Exception as exc:
-                    _log_warning(
-                        "tts_queue_item_failed",
-                        provider=desired_backend,
-                        cache_path=cache_path_local,
-                        error=exc,
-                    )
-                    secondary_backend = _secondary_online_provider(desired_backend)
-                    primary_rate_limited = _is_gemini_rate_limited_error(exc)
-                    if primary_rate_limited:
-                        _record_queue_rate_limit(desired_backend)
-                    else:
-                        _record_queue_soft_failure(desired_backend)
-                    if secondary_backend:
-                        try:
-                            fallback_key = get_llm_api_key() if secondary_backend == "gemini" else get_tts_api_key()
-                            wav_path, _label, _can_cache = _synthesize_with_online_provider(
-                                normalized_text,
-                                volume=1.0,
-                                short_text=True,
-                                provider=secondary_backend,
-                                api_key=fallback_key,
-                            )
-                            try:
-                                _save_word_cache_file(
-                                    cache_path_local,
-                                    wav_path,
-                                    text=normalized_text,
-                                    source_path=source_path,
-                                    backend=secondary_backend,
-                                    desired_backend=desired_backend,
-                                )
-                            finally:
-                                try:
-                                    os.remove(wav_path)
-                                except Exception:
-                                    pass
-                            _record_queue_success(secondary_backend)
-                            _log_info(
-                                "tts_queue_item_fallback_success",
-                                provider=desired_backend,
-                                fallback_provider=secondary_backend,
-                                cache_path=cache_path_local,
-                            )
-                            if primary_rate_limited:
-                                cooldown_seconds = _rate_limit_cooldown_for_provider(desired_backend)
-                                _defer_gemini_queue(
-                                    cooldown_seconds,
-                                    state="rate_limited",
-                                    provider=desired_backend,
-                                )
-                                _set_gemini_queue_status(
-                                    last_error=str(exc),
-                                    next_retry_at=time.time() + cooldown_seconds,
-                                )
-                            else:
-                                _set_gemini_queue_status(
-                                    state="ok",
-                                    next_retry_at=time.time() + _queue_interval_for_provider(desired_backend),
-                                    last_success_at=time.time(),
-                                    last_error="",
-                                )
-                            continue
-                        except Exception as fallback_exc:
-                            _record_queue_soft_failure(secondary_backend)
-                            _log_error(
-                                "tts_queue_item_fallback_failed",
-                                provider=desired_backend,
-                                fallback_provider=secondary_backend,
-                                cache_path=cache_path_local,
-                                error=fallback_exc,
-                            )
-                    if primary_rate_limited:
-                        cooldown_seconds = _rate_limit_cooldown_for_provider(desired_backend)
-                        _set_gemini_queue_status(
-                            state="rate_limited",
-                            next_retry_at=time.time() + cooldown_seconds,
-                            last_error=str(exc),
-                        )
-                        if not os.path.exists(cache_path_local):
-                            try:
-                                (wav_path, _label, _can_cache), placeholder_backend = _synthesize_with_local_placeholder(
-                                    normalized_text,
-                                    volume=1.0,
-                                    rate_ratio=1.0,
-                                )
-                                try:
-                                    _save_word_cache_file(
-                                        cache_path_local,
-                                        wav_path,
-                                        text=normalized_text,
-                                        source_path=source_path,
-                                        backend=placeholder_backend,
-                                        desired_backend=desired_backend,
-                                    )
-                                finally:
-                                    try:
-                                        os.remove(wav_path)
-                                    except Exception as cleanup_exc:
-                                        _log_warning("tts_queue_placeholder_cleanup_failed", path=wav_path, error=cleanup_exc)
-                            except Exception as placeholder_exc:
-                                _log_warning(
-                                    "tts_queue_placeholder_fallback_failed",
-                                    provider=desired_backend,
-                                    cache_path=cache_path_local,
-                                    error=placeholder_exc,
-                                )
-                        _log_warning(
-                            "tts_queue_item_rate_limited",
-                            provider=desired_backend,
-                            cache_path=cache_path_local,
-                            cooldown_seconds=cooldown_seconds,
-                        )
-                        threading.Event().wait(cooldown_seconds)
-                        continue
-                    _set_gemini_queue_status(
-                        state="error",
-                        next_retry_at=0.0,
-                        last_error=str(exc),
-                    )
-                    _log_error(
-                        "tts_queue_item_abandoned",
-                        provider=desired_backend,
-                        cache_path=cache_path_local,
-                        error=exc,
-                    )
-                    _remove_pending_gemini(cache_path_local)
-        finally:
-            with _pending_gemini_lock:
-                _pending_gemini_worker_running = False
-            _refresh_gemini_queue_status_counts()
-            with _pending_gemini_lock:
-                still_pending = bool(_pending_gemini_replacements)
-            if not still_pending:
-                current_status = _online_queue_manager.get_status()
-                updates = {
-                    "next_retry_at": 0.0,
-                    "worker_running": False,
-                }
-                if current_status.get("state") != "rate_limited":
-                    updates["state"] = "idle"
-                _online_queue_manager.set_status(**updates)
+        _run_pending_online_worker(
+            next_pending_item=_next_pending_gemini_item,
+            remove_pending_item=_remove_pending_gemini,
+            normalize_text=_normalize_text,
+            current_online_provider=_current_online_provider,
+            wait_for_queue_slot=_wait_for_gemini_queue_slot,
+            log_info=_log_info,
+            log_warning=_log_warning,
+            log_error=_log_error,
+            synthesize_gemini=_synthesize_with_gemini,
+            synthesize_elevenlabs=_synthesize_with_elevenlabs,
+            record_queue_success=_record_queue_success,
+            record_queue_rate_limit=_record_queue_rate_limit,
+            record_queue_soft_failure=_record_queue_soft_failure,
+            set_queue_status=_set_gemini_queue_status,
+            save_word_cache_file=_save_word_cache_file,
+            secondary_online_provider=_secondary_online_provider,
+            get_fallback_key=lambda provider: get_llm_api_key() if provider == "gemini" else get_tts_api_key(),
+            synthesize_with_online_provider=_synthesize_with_online_provider,
+            rate_limit_cooldown_for_provider=_rate_limit_cooldown_for_provider,
+            defer_queue=_defer_gemini_queue,
+            queue_interval_for_provider=_queue_interval_for_provider,
+            is_rate_limited_error=_is_gemini_rate_limited_error,
+            synthesize_local_placeholder=_synthesize_with_local_placeholder,
+            online_queue_manager=_runtime_state.online_queue_manager,
+            runtime_state=_runtime_state,
+            refresh_queue_status_counts=_refresh_gemini_queue_status_counts,
+        )
         _start_pending_gemini_worker()
 
     threading.Thread(target=_worker, daemon=True).start()
@@ -3068,17 +2486,18 @@ def _enqueue_gemini_replacement(text, cache_path, source_path=None):
 
 
 def stop():
+    _ensure_runtime_initialized()
     with _lock:
         _stop_locked()
 
 
 def speak_async(text, volume=1.0, rate_ratio=1.0, cancel_before=False, source_path=None, pre_silence_ms=0):
-    global _token
+    _ensure_runtime_initialized()
     if cancel_before:
         stop()
     with _lock:
-        _token += 1
-        my_token = _token
+        _runtime_state.token += 1
+        my_token = _runtime_state.token
     _log_info(
         "tts_speak_async_start",
         token=my_token,
@@ -3090,10 +2509,9 @@ def speak_async(text, volume=1.0, rate_ratio=1.0, cancel_before=False, source_pa
     )
 
     def _run():
-        global _current_wav
         try:
             with _lock:
-                if my_token != _token:
+                if my_token != _runtime_state.token:
                     return
             wav_path = _synthesize_to_wav(
                 text=text,
@@ -3111,7 +2529,7 @@ def speak_async(text, volume=1.0, rate_ratio=1.0, cancel_before=False, source_pa
                 default_sample_rate=TTS_SAMPLE_RATE,
             )
             with _lock:
-                if my_token != _token:
+                if my_token != _runtime_state.token:
                     try:
                         os.remove(wav_path)
                     except Exception as exc:
@@ -3119,7 +2537,7 @@ def speak_async(text, volume=1.0, rate_ratio=1.0, cancel_before=False, source_pa
                     _log_warning("tts_speak_async_cancelled", token=my_token)
                     return
                 _stop_locked()
-                _current_wav = wav_path
+                _runtime_state.current_wav = wav_path
             _play_wav_async(wav_path)
             _log_info("tts_speak_async_playing", token=my_token, wav_path=wav_path)
         except Exception as e:
@@ -3156,12 +2574,12 @@ def _split_long_text(text, chunk_chars=1200):
 
 
 def speak_stream_async(text, volume=1.0, rate_ratio=1.0, cancel_before=False, chunk_chars=220):
-    global _token
+    _ensure_runtime_initialized()
     if cancel_before:
         stop()
     with _lock:
-        _token += 1
-        my_token = _token
+        _runtime_state.token += 1
+        my_token = _runtime_state.token
     _log_info(
         "tts_stream_start",
         token=my_token,
@@ -3172,10 +2590,9 @@ def speak_stream_async(text, volume=1.0, rate_ratio=1.0, cancel_before=False, ch
     )
 
     def _run():
-        global _current_wav
         try:
             with _lock:
-                if my_token != _token:
+                if my_token != _runtime_state.token:
                     return
             chunks = _split_long_text(text, chunk_chars=max(400, int(chunk_chars)))
             if not chunks:
@@ -3217,7 +2634,7 @@ def speak_stream_async(text, volume=1.0, rate_ratio=1.0, cancel_before=False, ch
                 start_index = 0 if selected_source in {SOURCE_KOKORO, SOURCE_PIPER} else 1
                 for chunk in chunks[start_index:]:
                     with _lock:
-                        if my_token != _token:
+                        if my_token != _runtime_state.token:
                             _cleanup_temp_wavs(wav_paths)
                             _log_warning("tts_stream_cancelled", token=my_token)
                             return
@@ -3254,7 +2671,7 @@ def speak_stream_async(text, volume=1.0, rate_ratio=1.0, cancel_before=False, ch
                     try:
                         for chunk in chunks:
                             with _lock:
-                                if my_token != _token:
+                                if my_token != _runtime_state.token:
                                     _cleanup_temp_wavs(wav_paths)
                                     _log_warning("tts_stream_cancelled", token=my_token)
                                     return
@@ -3289,7 +2706,7 @@ def speak_stream_async(text, volume=1.0, rate_ratio=1.0, cancel_before=False, ch
                 )
 
             with _lock:
-                if my_token != _token:
+                if my_token != _runtime_state.token:
                     try:
                         os.remove(merged_path)
                     except Exception:
@@ -3297,7 +2714,7 @@ def speak_stream_async(text, volume=1.0, rate_ratio=1.0, cancel_before=False, ch
                     _log_warning("tts_stream_cancelled", token=my_token)
                     return
                 _stop_locked()
-                _current_wav = merged_path
+                _runtime_state.current_wav = merged_path
             _play_wav_async(merged_path)
             _log_info("tts_stream_playing", token=my_token, wav_path=merged_path, fallback=fallback)
         except Exception as e:
@@ -3309,13 +2726,14 @@ def speak_stream_async(text, volume=1.0, rate_ratio=1.0, cancel_before=False, ch
 
 
 def cancel_all():
-    global _token
+    _ensure_runtime_initialized()
     with _lock:
-        _token += 1
+        _runtime_state.token += 1
         _stop_locked()
 
 
 def precache_word_audio_async(words, source_path=None, rate_ratio=1.0, on_progress=None, on_done=None):
+    _ensure_runtime_initialized()
     items = []
     seen = set()
     for word in words or []:
@@ -3381,24 +2799,15 @@ def precache_word_audio_async(words, source_path=None, rate_ratio=1.0, on_progre
 
 
 def prepare_async():
+    _ensure_runtime_initialized()
     return None
 
 
 def get_runtime_label():
+    _ensure_runtime_initialized()
     source = get_voice_source()
     if source == SOURCE_KOKORO:
         return "Kokoro (Offline)"
     if source == SOURCE_PIPER:
         return "Piper (Local)"
     return _online_provider_label()
-
-
-_migrate_legacy_word_wrapper_layout()
-_migrate_flat_root_cache_layout()
-_migrate_pending_queue_path()
-_load_pending_gemini_queue()
-_cleanup_duplicate_source_cache_entries()
-_normalize_cache_metadata_texts()
-_collapse_existing_lightweight_source_caches()
-_collapse_all_source_cache_entities_to_aliases()
-_start_pending_gemini_worker()
