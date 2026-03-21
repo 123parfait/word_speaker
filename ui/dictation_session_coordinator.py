@@ -230,7 +230,7 @@ def finalize_attempt(host, trigger="manual"):
             break
     if not replaced:
         host.dictation_session_attempts.append(attempt_entry)
-    if result.cleared_recent_wrong:
+    if result.refreshed_recent_list:
         host.refresh_dictation_recent_list()
     if result.appended_wrong_item:
         host.dictation_wrong_items.append(dict(result.appended_wrong_item))
@@ -283,6 +283,8 @@ def finish_session(host):
     host._cancel_dictation_play_start()
     host._cancel_dictation_timer()
     host._cancel_dictation_feedback_reset()
+    tts_cancel_all()
+    host.stop_dictation_result_effect()
     host.update_dictation_play_button()
     summary = host.dictation_controller.finish_session(
         correct_count=host.dictation_correct_count,
@@ -293,9 +295,11 @@ def finish_session(host):
     host._render_dictation_answer_review_views()
     host.refresh_dictation_recent_list()
     host._show_dictation_frame(host.dictation_result_frame)
+    host.start_dictation_result_effect(summary.accuracy)
 
 
 def reset_view(host):
+    host.stop_dictation_result_effect()
     state = host.dictation_controller.build_reset_state()
     host.dictation_running = state.running
     host.dictation_paused = state.paused
@@ -311,6 +315,7 @@ def reset_view(host):
     host._cancel_dictation_play_start()
     host._cancel_dictation_timer()
     host._cancel_dictation_feedback_reset()
+    tts_cancel_all()
     host.update_dictation_play_button()
     host.dictation_progress_var.set(state.progress_text)
     host.dictation_timer_var.set(state.timer_text)

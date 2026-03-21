@@ -121,6 +121,8 @@ def build_dictation_panel(host, parent):
     host.dictation_input.grid(row=0, column=0, sticky="ew", padx=(0, 8), ipady=20)
     host.dictation_input.bind("<KeyRelease>", host.on_dictation_input_change)
     host.dictation_input.bind("<Return>", host.on_dictation_enter)
+    host.dictation_input.bind("<FocusIn>", lambda _e: host.close_dictation_volume_popup())
+    host.dictation_input.bind("<Button-1>", lambda _e: host.close_dictation_volume_popup())
     timer_wrap = ttk.Frame(input_card, style="Card.TFrame")
     timer_wrap.grid(row=0, column=1, sticky="ne")
     ttk.Label(

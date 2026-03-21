@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from services.tts import (
     cleanup_cache_for_source_path as tts_cleanup_cache_for_source_path,
+    cleanup_manual_session_cache as tts_cleanup_manual_session_cache,
     rebind_manual_session_cache_to_source as tts_rebind_manual_session_cache_to_source,
     rename_cache_source_path as tts_rename_cache_source_path,
     set_preferred_pending_source as tts_set_preferred_pending_source,
@@ -74,6 +75,14 @@ class WordListController:
     def __init__(self, store):
         self.store = store
 
+    def discard_temporary_session(self):
+        temp_source = self.store.get_current_source_path() if self.store.is_temp_source_active() else ""
+        if temp_source:
+            tts_cleanup_cache_for_source_path(temp_source)
+        # Older builds used a pathless manual-session cache bucket. Keep clearing it for compatibility.
+        tts_cleanup_manual_session_cache()
+        self.store.clear_temp_source_file()
+
     def _update_word_stats(self, words):
         try:
             stats = self.store.load_stats()
@@ -84,32 +93,44 @@ class WordListController:
             return
 
     def create_blank_list(self):
+        if self.store.is_temp_source_active():
+            self.discard_temporary_session()
         self.store.clear()
+        self.store.ensure_temp_source_binding()
 
     def load_words(self, path):
+        if self.store.is_temp_source_active():
+            self.discard_temporary_session()
         return self.store.load_from_file(path)
 
     def open_history_path(self, path):
+        if self.store.is_temp_source_active():
+            self.discard_temporary_session()
         return self.store.load_from_file(path)
 
     def save_words_as(self, path, *, words_snapshot=None, was_manual_session=False):
+        old_source_path = self.store.get_current_source_path()
+        was_temp_session = self.store.is_temp_source_active()
         self.store.save_to_file(path)
         self.store.add_history(path)
-        if was_manual_session and words_snapshot:
+        if was_temp_session and old_source_path:
+            tts_rename_cache_source_path(old_source_path, path)
+            self.store.clear_temp_source_file()
+        elif was_manual_session and words_snapshot:
             tts_rebind_manual_session_cache_to_source(words_snapshot, path)
         tts_set_preferred_pending_source(path)
         return SaveWordsResult(path=path)
 
     def save_back_to_source(self):
-        if not self.store.has_current_source_file():
+        if not self.store.has_bound_source_path():
             return False
         self.store.save_to_current_file()
-        return True
+        return self.store.has_current_source_file()
 
     def apply_manual_words(self, words, notes, *, mode="replace", ui_language="zh"):
         normalized_words = list(words or [])
         normalized_notes = list(notes or [])
-        keep_source_binding = self.store.has_current_source_file()
+        keep_source_binding = self.store.has_bound_source_path()
         if mode == "append":
             merged_words = list(self.store.words) + normalized_words
             merged_notes = list(self.store.notes) + normalized_notes
@@ -125,25 +146,32 @@ class WordListController:
             result_words = normalized_words
             result_notes = normalized_notes
 
+        bound_to_real_source = self.store.has_current_source_file()
+        if not keep_source_binding:
+            self.store.ensure_temp_source_binding()
+            keep_source_binding = True
+            bound_to_real_source = False
+
         saved_to_source = False
         if keep_source_binding:
             saved_to_source = self.save_back_to_source()
-            if saved_to_source:
-                suffix = " Saved to source file." if ui_language == "en" else " 已保存到源文件。"
-            else:
-                suffix = (
-                    " Save to source file failed; changes are kept in memory."
-                    if ui_language == "en"
-                    else " 保存源文件失败，修改暂时只保留在内存中。"
-                )
-            status_text += suffix
+            if bound_to_real_source:
+                if saved_to_source:
+                    suffix = " Saved to source file." if ui_language == "en" else " 已保存到源文件。"
+                else:
+                    suffix = (
+                        " Save to source file failed; changes are kept in memory."
+                        if ui_language == "en"
+                        else " 保存源文件失败，修改暂时只保留在内存中。"
+                    )
+                status_text += suffix
 
         return ApplyManualWordsResult(
             words=result_words,
             notes=result_notes,
             status_text=status_text,
             saved_to_source=saved_to_source,
-            source_bound=keep_source_binding,
+            source_bound=bound_to_real_source,
         )
 
     def delete_word(self, index, translations=None, word_pos=None):
@@ -167,7 +195,9 @@ class WordListController:
         self.store.words.append(word)
         self.store.notes.append(note)
         self._update_word_stats([word])
-        saved_to_source = self.save_back_to_source() if self.store.has_current_source_file() else False
+        if not self.store.has_bound_source_path():
+            self.store.ensure_temp_source_binding()
+        saved_to_source = self.save_back_to_source()
         return AddWordResult(
             word=word,
             note=note,

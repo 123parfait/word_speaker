@@ -3,8 +3,8 @@ import random
 from dataclasses import dataclass
 
 from services.tts import (
-    cleanup_word_audio_cache as tts_cleanup_word_audio_cache,
     promote_word_audio_to_recent_wrong as tts_promote_word_audio_to_recent_wrong,
+    cleanup_word_audio_cache as tts_cleanup_word_audio_cache,
 )
 
 
@@ -12,7 +12,7 @@ from services.tts import (
 class DictationAttemptResult:
     attempt_entry: dict
     appended_wrong_item: dict | None
-    cleared_recent_wrong: bool
+    refreshed_recent_list: bool
 
 
 @dataclass
@@ -129,7 +129,13 @@ class DictationController:
         rows = []
         cached_translations = translations or {}
         cached_pos = word_pos or {}
-        ordered_attempts = sorted(list(attempts or []), key=lambda item: int(item.get("position", 0)))
+        ordered_attempts = sorted(
+            list(attempts or []),
+            key=lambda item: (
+                1 if item.get("correct") else 0,
+                int(item.get("position", 0)),
+            ),
+        )
         for item in ordered_attempts:
             word = str(item.get("word") or "").strip()
             if not word:
@@ -177,14 +183,8 @@ class DictationController:
             "previous_stats": previous_stats,
         }
         appended_wrong_item = None
-        cleared_recent_wrong = False
         if is_correct:
-            if str(list_mode or "").strip().lower() == "recent":
-                self.store.clear_wrong_word(token)
-                if recent_wrong_source_path:
-                    tts_cleanup_word_audio_cache(token, source_path=recent_wrong_source_path)
-                attempt_entry["wrong_count"] = 0
-                cleared_recent_wrong = True
+            pass
         else:
             appended_wrong_item = {"position": int(position), "word": token, "input": typed}
             tts_promote_word_audio_to_recent_wrong(
@@ -194,7 +194,7 @@ class DictationController:
         return DictationAttemptResult(
             attempt_entry=attempt_entry,
             appended_wrong_item=appended_wrong_item,
-            cleared_recent_wrong=cleared_recent_wrong,
+            refreshed_recent_list=bool(appended_wrong_item),
         )
 
     def revert_attempt(self, attempt_entry, *, recent_wrong_source_path=None):

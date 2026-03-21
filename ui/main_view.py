@@ -15,7 +15,6 @@ from services.tts import (
     speak_async,
     cancel_all as tts_cancel_all,
     clear_word_backend_override as tts_clear_word_backend_override,
-    cleanup_manual_session_cache as tts_cleanup_manual_session_cache,
     get_recent_wrong_cache_source as tts_get_recent_wrong_cache_source,
     get_word_audio_cache_info as tts_get_word_audio_cache_info,
     precache_word_audio_async,
@@ -136,6 +135,10 @@ from ui.dictation_window_coordinator import (
     start_from_selected_word as start_dictation_from_selected_word_flow,
     toggle_volume_popup as toggle_dictation_volume_popup_flow,
     on_volume_change as on_dictation_volume_change_flow,
+)
+from ui.dictation_result_effects import (
+    start_result_effect as start_dictation_result_effect_flow,
+    stop_result_effect as stop_dictation_result_effect_flow,
 )
 from ui.async_event_helper import clear_event_queue, drain_event_queue, emit_event
 from ui.api_key_async import (
@@ -1076,6 +1079,7 @@ class MainView(ttk.Frame):
         self.build_ui()
         try:
             self.winfo_toplevel().protocol("WM_DELETE_WINDOW", self.on_main_window_close)
+            self.winfo_toplevel().bind("<space>", self.on_main_window_space_toggle, add="+")
         except Exception:
             pass
         self.refresh_history()
@@ -1125,6 +1129,41 @@ class MainView(ttk.Frame):
     def show_error(self, title_key, message_key=None, **kwargs):
         text = self.trf(message_key or title_key, **kwargs)
         messagebox.showerror(self.tr(title_key), text)
+
+    def _space_shortcut_available(self, widget):
+        if widget is None:
+            return False
+        blocked_classes = {
+            "Entry",
+            "TEntry",
+            "Text",
+            "Spinbox",
+            "TCombobox",
+            "Combobox",
+            "Listbox",
+        }
+        try:
+            widget_class = str(widget.winfo_class() or "")
+        except Exception:
+            widget_class = ""
+        if widget_class in blocked_classes:
+            return False
+        if self.word_edit_entry and widget == self.word_edit_entry:
+            return False
+        if self.dictation_window and self.dictation_window.winfo_exists():
+            try:
+                if widget.winfo_toplevel() == self.dictation_window:
+                    return False
+            except Exception:
+                pass
+        return True
+
+    def on_main_window_space_toggle(self, event=None):
+        widget = getattr(event, "widget", None)
+        if not self._space_shortcut_available(widget):
+            return None
+        self.toggle_play()
+        return "break"
 
     def on_ui_language_change(self, _event=None):
         new_language = "en" if self.ui_language_var.get() == "en" else "zh"
@@ -1181,6 +1220,12 @@ class MainView(ttk.Frame):
     def _has_unsaved_manual_words(self):
         return bool(self.manual_source_dirty and self.store.words and not self.store.has_current_source_file())
 
+    def _discard_temporary_session_artifacts(self):
+        if not self.store.is_temp_source_active():
+            return
+        self.word_list_controller.discard_temporary_session()
+        self.manual_source_dirty = False
+
     def _mark_manual_words_dirty(self):
         self.manual_source_dirty = True
         self._refresh_selection_details()
@@ -1198,6 +1243,7 @@ class MainView(ttk.Frame):
             return False
         if answer:
             return self.save_words_as()
+        self._discard_temporary_session_artifacts()
         return True
 
     def new_blank_list(self):
@@ -1221,7 +1267,11 @@ class MainView(ttk.Frame):
         current_source = self.store.get_current_source_path()
         was_manual_session = not current_source
         words_snapshot = [str(word) for word in self.store.words]
-        initial_name = os.path.basename(current_source) if current_source else "word_list.csv"
+        initial_name = (
+            "word_list.csv"
+            if self.store.is_temp_source_active()
+            else (os.path.basename(current_source) if current_source else "word_list.csv")
+        )
         default_ext = ".csv"
         if str(initial_name).lower().endswith(".txt"):
             default_ext = ".txt"
@@ -1252,8 +1302,7 @@ class MainView(ttk.Frame):
         if not self._prompt_save_unsaved_manual_words():
             return
         tts_set_preferred_pending_source(None)
-        if not self.store.has_current_source_file():
-            tts_cleanup_manual_session_cache()
+        self._discard_temporary_session_artifacts()
         try:
             self.winfo_toplevel().destroy()
         except Exception:
@@ -1286,7 +1335,7 @@ class MainView(ttk.Frame):
                 translation=zh,
                 pos_label=pos_label,
                 phonetic=phonetic,
-                current_source_path=self.store.get_current_source_path(),
+                current_source_path=self.store.get_display_source_path(),
                 has_current_source_file=self.store.has_current_source_file(),
                 has_unsaved_manual_words=self._has_unsaved_manual_words(),
             )
@@ -1321,7 +1370,7 @@ class MainView(ttk.Frame):
             selected_translation=selected_translation,
             selected_pos=selected_pos,
             selected_phonetic=selected_phonetic,
-            current_source_path=self.store.get_current_source_path(),
+            current_source_path=self.store.get_display_source_path(),
             has_current_source_file=self.store.has_current_source_file(),
             has_unsaved_manual_words=self._has_unsaved_manual_words(),
             order_mode=self.order_mode.get(),
@@ -1664,6 +1713,12 @@ class MainView(ttk.Frame):
     def _toggle_dictation_answer_review_filter(self):
         self.dictation_answer_review_show_wrong_only = not self.dictation_answer_review_show_wrong_only
         self._render_dictation_answer_review_views()
+
+    def start_dictation_result_effect(self, accuracy):
+        start_dictation_result_effect_flow(self, accuracy)
+
+    def stop_dictation_result_effect(self):
+        stop_dictation_result_effect_flow(self)
 
     def _return_from_dictation_answer_review(self):
         self.close_dictation_answer_review_popup()
@@ -2604,6 +2659,8 @@ class MainView(ttk.Frame):
         )
         if not path:
             return
+        if not self._prompt_save_unsaved_manual_words(title="Open word list?"):
+            return
         if str(path).lower().endswith(".wspack"):
             self.import_word_resource_pack_tool(package_path=path)
             return
@@ -2964,6 +3021,7 @@ class MainView(ttk.Frame):
         if self.word_table:
             iid = str(result.index)
             try:
+                self.suppress_word_select_action = True
                 self.word_table.selection_set(iid)
                 self.word_table.focus(iid)
                 self.word_table.see(iid)
@@ -2986,6 +3044,7 @@ class MainView(ttk.Frame):
                     row_idx = int(row_id)
                 except Exception:
                     row_idx = self._get_selected_index()
+                self.suppress_word_select_action = True
                 self.word_table.selection_set(row_id)
                 self.word_table.focus(row_id)
             if hit_column in ("#2", "#3"):
@@ -3189,6 +3248,7 @@ class MainView(ttk.Frame):
         if self.store.words and self.word_table:
             next_idx = min(selected_idx, len(self.store.words) - 1)
             if self.word_table.exists(str(next_idx)):
+                self.suppress_word_select_action = True
                 self.word_table.selection_set(str(next_idx))
                 self.word_table.focus(str(next_idx))
         self.status_var.set(self.trf("word_deleted", word=result.word))
@@ -3229,6 +3289,8 @@ class MainView(ttk.Frame):
     def on_history_open(self, _event=None):
         sel = self.history_list.curselection()
         self.cancel_word_edit()
+        if not self._prompt_save_unsaved_manual_words(title="Open history file?"):
+            return
         history = self.store.load_history()
         selected = get_selected_history_item(history, sel)
         if selected is None:
@@ -4013,6 +4075,7 @@ class MainView(ttk.Frame):
         row_id = self.word_table.identify_row(event.y) if event is not None and self.word_table else ""
         if row_id:
             try:
+                self.suppress_word_select_action = True
                 self.word_table.selection_set(row_id)
                 self.word_table.focus(row_id)
             except Exception:

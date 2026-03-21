@@ -57,9 +57,28 @@ except Exception:
     pass
 hiddenimports += [
     "piper",
+    "piper.voice",
+    "piper.config",
+    "piper.const",
+    "piper.phoneme_ids",
+    "piper.phonemize_espeak",
+    "piper.phonemize_chinese",
     "phonemizer",
     "espeakng_loader",
 ]
+
+try:
+    hiddenimports += [
+        name
+        for name in collect_submodules("piper")
+        if not (
+            name == "piper.train"
+            or name.startswith("piper.train.")
+            or name in {"piper.download_voices", "piper.http_server", "piper.patch_voice_with_alignment"}
+        )
+    ]
+except Exception:
+    pass
 
 for package_name in ("phonemizer", "espeakng_loader"):
     try:

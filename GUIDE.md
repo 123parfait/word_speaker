@@ -9,13 +9,16 @@
 - The `Word` column shows two lines: `English`, then `part of speech + Chinese translation`
 - Edit `Word` and `Notes` directly in the list and save changes back to the source file
 - Manual pasted lists support `Save As`
-- Unsaved manual lists trigger a save prompt before closing
+- Unsaved manual lists now bind to a temporary backing file first, so translation / POS / phonetic / audio caches can still use a stable source path before the user chooses where to save
+- Unsaved manual lists still trigger a save prompt before closing
+- If the user discards an unsaved manual list, the temporary file and its related cache entries are cleaned up
 - `New List` creates a blank list for building a new vocabulary file
 - Main `Play` is now a single sequential loop mode
 - If a word is selected, `Play` starts from that word
 - If nothing is selected, `Play` starts from the first word
 - Playback moves the visible blue selection highlight as it reads
 - After the last word, playback loops back to the first word automatically
+- `Space` toggles main playback pause / resume when the focus is on the main window
 - Single-click and double-click both play pronunciation
 - Right-click a word for edit, corpus search, sentence generation, synonyms, and cached-audio inspection
 - Right-click also supports:
@@ -30,6 +33,11 @@
 - In dictation, `Previous` now reopens the last word for editing and rolls back the previous attempt so the old answer does not count
 - Wrong answers in dictation stay visible briefly before the next word instead of disappearing immediately
 - Dictation includes a dedicated volume popup with boost up to `600%`
+- The dictation volume popup auto-closes when the user returns focus to the typing box
+- The session-end result screen plays a short 3-second visual effect based on accuracy:
+  - below `50%`: rainbow
+  - `50% - 80%`: blooming flower
+  - above `80%`: fireworks and confetti
 - The app starts maximized by default on Windows
 - The project now includes `speaker.png` / `speaker.ico` for runtime and packaged app icons
 - History items can be removed or renamed inside the app, with matching cache updates
@@ -146,12 +154,13 @@
 - Wrong answers are recorded locally and feed back into the `Recent Wrong` list
 - `Recent Wrong` is global, not limited to the currently opened file
 - `Recent Wrong` shows error cause instead of normal notes and sorts by mistake count
-- Correct answers in recent-wrong study can remove the word from the recent-wrong list and clean up the matching recent-wrong alias cache
+- Correct answers in recent-wrong study do not auto-remove the word from the recent-wrong list; users clear the list manually
 - The answer-review popup shows:
   - accuracy so far
   - last session accuracy
   - session answers
   - wrong-only filtering
+- Session-end review rows are ordered with wrong answers first, then correct answers
 
 ## Find Corpus
 

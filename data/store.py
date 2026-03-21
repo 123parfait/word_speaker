@@ -396,11 +396,14 @@ class WordStore:
         self.words: list[str] = []
         self.notes: list[str] = []
         self.current_source_path: str | None = None
+        self.temp_source_active = False
 
         base_dir = os.path.dirname(__file__)
         self.history_path = os.path.join(base_dir, "history.json")
         self.stats_path = os.path.join(base_dir, "word_stats.json")
         self.dictation_stats_path = os.path.join(base_dir, "dictation_stats.json")
+        self.temp_source_dir = os.path.join(base_dir, "temp_word_lists")
+        self.temp_source_path = os.path.join(self.temp_source_dir, "current_manual_list.csv")
 
         self.history_repo = HistoryRepository(self.history_path)
         self.word_stats_repo = WordStatsRepository(self.stats_path)
@@ -410,6 +413,7 @@ class WordStore:
         self.words = []
         self.notes = []
         self.current_source_path = None
+        self.temp_source_active = False
 
     def set_words(self, words, notes=None, preserve_source=False):
         self.words = list(words or [])
@@ -419,12 +423,14 @@ class WordStore:
         self.notes = base_notes[: len(self.words)]
         if not preserve_source:
             self.current_source_path = None
+            self.temp_source_active = False
 
     def load_from_file(self, path):
         words, notes = WordListFileStore.load(path)
         self.words = words
         self.notes = notes
         self.current_source_path = _abs_path(path)
+        self.temp_source_active = False
         self.history_repo.add(path)
         self.word_stats_repo.record_loaded_words(words)
         return words
@@ -432,11 +438,50 @@ class WordStore:
     def get_current_source_path(self):
         return self.current_source_path
 
+    def get_display_source_path(self):
+        if self.temp_source_active:
+            return None
+        return self.current_source_path
+
     def has_current_source_file(self):
+        return bool(
+            self.current_source_path
+            and not self.temp_source_active
+            and os.path.exists(self.current_source_path)
+        )
+
+    def has_bound_source_path(self):
         return bool(self.current_source_path and os.path.exists(self.current_source_path))
+
+    def is_temp_source_active(self):
+        return bool(self.temp_source_active)
 
     def detach_current_source(self):
         self.current_source_path = None
+        self.temp_source_active = False
+
+    def ensure_temp_source_binding(self):
+        os.makedirs(self.temp_source_dir, exist_ok=True)
+        WordListFileStore.save(self.temp_source_path, self.words, self.notes)
+        self.current_source_path = _abs_path(self.temp_source_path)
+        self.temp_source_active = True
+        return self.current_source_path
+
+    def clear_temp_source_file(self):
+        temp_path = _abs_path(self.temp_source_path)
+        try:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        except Exception:
+            pass
+        try:
+            if os.path.isdir(self.temp_source_dir) and not os.listdir(self.temp_source_dir):
+                os.rmdir(self.temp_source_dir)
+        except Exception:
+            pass
+        if self.current_source_path and _abs_path(self.current_source_path) == temp_path:
+            self.current_source_path = None
+        self.temp_source_active = False
 
     def save_to_current_file(self):
         if not self.current_source_path:
@@ -446,7 +491,9 @@ class WordStore:
     def save_to_file(self, path):
         saved = WordListFileStore.save(path, self.words, self.notes)
         if saved:
-            self.current_source_path = _abs_path(path)
+            normalized_path = _abs_path(path)
+            self.current_source_path = normalized_path
+            self.temp_source_active = normalized_path == _abs_path(self.temp_source_path)
         return saved
 
     def load_history(self):

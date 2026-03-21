@@ -7,14 +7,22 @@ The project is currently migrating from `Tkinter` to `PySide6`. The default laun
 ## Project
 
 - Study from imported `.txt` / `.csv` word lists
+- Unsaved manual word lists now use a temporary backing file so source-path-based cache features still work before `Save As`
 - Play word audio with online TTS or local TTS
 - Main `Play` now works as a simple sequential loop over the current word list:
   - starts from the currently selected word if one is selected
   - otherwise starts from the first word
   - moves the blue selection highlight as it reads
   - loops back to the first word after the end of the list
+  - supports `Space` to pause / resume from the main window
 - Practice dictation with wrong-word review
 - Dictation now supports both sequential order and random no-repeat order
+- Dictation no longer auto-removes a word from `Recent Wrong` just because the user answered it correctly once
+- Dictation result screen now plays a short 3-second celebration effect:
+  - `< 50%`: rainbow
+  - `50% - 80%`: blooming flower
+  - `> 80%`: fireworks and confetti
+- Dictation volume popup now auto-closes when the user returns to the typing box
 - Generate IELTS-style passages and example sentences
 - Search imported corpus documents locally
 - Configure separate `LLM API` and `TTS API`
