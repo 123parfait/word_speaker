@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from dataclasses import dataclass
 
+from services.phonetics import get_cached_phonetics, set_cached_phonetic
 from services.translation import get_cached_translations, set_cached_translation
 from services.word_analysis import get_cached_pos, set_cached_pos
 from services.tts import (
@@ -57,6 +58,11 @@ class RecentWrongController:
             (translations or {}).get(source_word) or get_cached_translations([source_word]).get(source_word) or ""
         ).strip()
         current_pos = str((word_pos or {}).get(source_word) or get_cached_pos([source_word]).get(source_word) or "").strip()
+        current_phonetic = str(
+            current_entry.get("phonetic")
+            or get_cached_phonetics([source_word]).get(source_word)
+            or ""
+        ).strip()
         if current_translation:
             set_cached_translation(new_word, current_translation)
             if isinstance(translations, dict):
@@ -65,6 +71,8 @@ class RecentWrongController:
             set_cached_pos(new_word, current_pos)
             if isinstance(word_pos, dict):
                 word_pos[new_word] = current_pos
+        if current_phonetic:
+            set_cached_phonetic(new_word, current_phonetic)
         if current_entry.get("note"):
             self.store.set_recent_wrong_note(new_word, current_entry.get("note"))
         self.store.rename_recent_wrong_word(source_word, new_word)

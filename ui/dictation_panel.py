@@ -27,7 +27,7 @@ def build_dictation_panel(host, parent):
 
     ttk.Label(
         host.dictation_setup_frame,
-        textvariable=host.dictation_status_var,
+        textvariable=host.dictation_setup_status_var,
         style="Card.TLabel",
         foreground="#667085",
         wraplength=640,
@@ -77,6 +77,7 @@ def build_dictation_panel(host, parent):
     host.dictation_session_frame.grid(row=0, column=0, sticky="nsew")
     host.dictation_session_frame.grid_remove()
     host.dictation_session_frame.grid_columnconfigure(0, weight=1)
+    host.dictation_session_frame.grid_rowconfigure(3, minsize=38)
 
     session_header = ttk.Frame(host.dictation_session_frame, style="Card.TFrame")
     session_header.grid(row=0, column=0, sticky="ew")
@@ -141,6 +142,8 @@ def build_dictation_panel(host, parent):
         textvariable=host.dictation_status_var,
         style="Card.TLabel",
         foreground="#667085",
+        wraplength=640,
+        justify="left",
     )
     host.dictation_result_label.grid(row=3, column=0, sticky="w", pady=(8, 10))
 
@@ -241,15 +244,16 @@ def build_dictation_panel(host, parent):
     result_tree.heading("word", text=host.tr("word"))
     result_tree.heading("input", text=host.tr("your_answer"))
     result_tree.heading("count", text=host.tr("wrong_times"))
-    result_tree.column("word", width=390, minwidth=240, anchor="w", stretch=True)
-    result_tree.column("input", width=220, minwidth=150, anchor="w", stretch=True)
-    result_tree.column("count", width=110, minwidth=90, anchor="center", stretch=False)
+    result_tree.column("word", width=340, minwidth=220, anchor="w", stretch=True)
+    result_tree.column("input", width=240, minwidth=160, anchor="w", stretch=True)
+    result_tree.column("count", width=96, minwidth=82, anchor="center", stretch=False)
     result_tree.tag_configure("correct", foreground="#15803d")
     result_tree.tag_configure("wrong", foreground="#dc2626")
     result_tree.grid(row=0, column=0, sticky="nsew")
     result_scroll = ttk.Scrollbar(result_table_wrap, orient="vertical", command=result_tree.yview)
     result_scroll.grid(row=0, column=1, sticky="ns")
     result_tree.configure(yscrollcommand=result_scroll.set)
+    result_tree.bind("<ButtonRelease-1>", host.on_dictation_review_tree_click)
     host.dictation_result_review_tree = result_tree
 
 
@@ -325,13 +329,14 @@ def build_dictation_answer_review_popup(host):
     tree.heading("word", text=host.tr("word"))
     tree.heading("input", text=host.tr("your_answer"))
     tree.heading("count", text=host.tr("wrong_times"))
-    tree.column("word", width=390, minwidth=240, anchor="w", stretch=True)
-    tree.column("input", width=220, minwidth=150, anchor="w", stretch=True)
-    tree.column("count", width=110, minwidth=90, anchor="center", stretch=False)
+    tree.column("word", width=340, minwidth=220, anchor="w", stretch=True)
+    tree.column("input", width=240, minwidth=160, anchor="w", stretch=True)
+    tree.column("count", width=96, minwidth=82, anchor="center", stretch=False)
     tree.tag_configure("correct", foreground="#15803d")
     tree.tag_configure("wrong", foreground="#dc2626")
     tree.grid(row=0, column=0, sticky="nsew")
     scroll = ttk.Scrollbar(table_wrap, orient="vertical", command=tree.yview)
     scroll.grid(row=0, column=1, sticky="ns")
     tree.configure(yscrollcommand=scroll.set)
+    tree.bind("<ButtonRelease-1>", host.on_dictation_review_tree_click)
     host.dictation_answer_review_tree = tree

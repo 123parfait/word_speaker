@@ -529,6 +529,8 @@ def set_word_backend_override(text, source_path=None, backend=None):
     backend_key = str(backend or "").strip().lower()
     if not key or backend_key not in {"gemini", "elevenlabs", "kokoro", "piper"}:
         return False
+    if backend_key in {"piper", "kokoro"}:
+        _preserve_default_online_backup(text, source_path=source_path)
     payload = _load_word_audio_overrides()
     payload[key] = backend_key
     _save_word_audio_overrides(payload)
@@ -547,6 +549,7 @@ def clear_word_backend_override(text, source_path=None):
     cache_path = _word_cache_path(text, source_path=source_path)
     metadata = _load_cache_metadata(cache_path)
     backend = str(metadata.get("backend") or "").strip().lower()
+    backup_path = str(metadata.get("default_online_backup_path") or "").strip()
     if backend in {"piper", "kokoro"}:
         playable_path = _resolve_cache_audio_path(cache_path)
         for path in {str(cache_path or "").strip(), str(playable_path or "").strip(), _cache_meta_path(cache_path)}:
@@ -558,6 +561,8 @@ def clear_word_backend_override(text, source_path=None):
             except Exception as exc:
                 _log_warning("tts_clear_backend_override_remove_failed", path=path, error=exc)
         _remove_cache_metadata(cache_path)
+        if _restore_default_online_backup(text, source_path=source_path, backup_path=backup_path):
+            return True
         return True
     return existed
 
@@ -989,6 +994,78 @@ def _update_source_cache_desired_backend(text, source_path, *, backend=None, des
     return source_cache_path
 
 
+def _preserve_default_online_backup(text, source_path=None):
+    source_cache_path = _word_cache_path(text, source_path=source_path)
+    metadata = _load_cache_metadata(source_cache_path)
+    existing_backup = str(metadata.get("default_online_backup_path") or "").strip()
+    if existing_backup and _resolve_cache_audio_path(existing_backup):
+        return existing_backup
+
+    backend = str(metadata.get("backend") or "").strip().lower()
+    desired_backend = str(metadata.get("desired_backend") or "").strip().lower()
+    linked_shared = str(metadata.get("linked_shared_path") or "").strip()
+    playable_path = _resolve_cache_audio_path(source_cache_path)
+    backup_path = ""
+
+    if linked_shared and _resolve_cache_audio_path(linked_shared) and (
+        _is_online_backend(backend) or _is_online_backend(desired_backend)
+    ):
+        backup_path = linked_shared
+    elif playable_path and (_is_online_backend(backend) or _is_online_backend(desired_backend)):
+        backup_path = _ensure_shared_cache_from_playable(
+            text,
+            playable_path,
+            backend=backend or _current_online_provider(),
+            desired_backend=desired_backend or backend or _current_online_provider(),
+            metadata=metadata,
+        )
+    else:
+        backup_path, _, _ = _best_shared_online_cache(
+            text,
+            preferred_provider=desired_backend or _current_online_provider(),
+        )
+
+    if not backup_path:
+        return ""
+
+    payload = dict(metadata) if isinstance(metadata, dict) else {}
+    payload["text"] = _normalize_text(text, ensure_sentence_end=False)
+    payload["source_path"] = str(_normalize_source_path(source_path) or "").strip() or None
+    payload["default_online_backup_path"] = backup_path
+    _save_cache_metadata(source_cache_path, payload)
+    return backup_path
+
+
+def _restore_default_online_backup(text, source_path=None, backup_path=""):
+    resolved_backup = str(backup_path or "").strip()
+    if not resolved_backup or not _resolve_cache_audio_path(resolved_backup):
+        return False
+    backup_metadata = _load_cache_metadata(resolved_backup)
+    backup_backend = str(backup_metadata.get("backend") or "").strip().lower() or _current_online_provider()
+    backup_desired = str(backup_metadata.get("desired_backend") or "").strip().lower() or backup_backend
+    try:
+        restored_cache_path = _write_source_alias_metadata(
+            text,
+            source_path,
+            resolved_backup,
+            backend=backup_backend,
+            desired_backend=backup_desired,
+        )
+        payload = _load_cache_metadata(restored_cache_path)
+        payload["default_online_backup_path"] = resolved_backup
+        _save_cache_metadata(restored_cache_path, payload)
+        return True
+    except Exception as exc:
+        _log_warning(
+            "tts_restore_default_online_backup_failed",
+            text=text,
+            source_path=source_path or "",
+            backup_path=resolved_backup,
+            error=exc,
+        )
+        return False
+
+
 def _collapse_source_cache_to_alias(text, source_path=None):
     if _normalize_source_path(source_path) == "shared":
         return False
@@ -1281,6 +1358,7 @@ def _has_valid_gemini_cache(cache_path):
 
 
 def _save_word_cache_file(cache_path, wav_path, *, text=None, source_path=None, backend=None, desired_backend=None):
+    previous_metadata = _load_cache_metadata(cache_path)
     actual_backend = _backend_key(fallback_backend=backend)
     wanted_backend = _backend_key(fallback_backend=desired_backend or actual_backend)
     normalized_source = _normalize_source_path(source_path)
@@ -1290,6 +1368,9 @@ def _save_word_cache_file(cache_path, wav_path, *, text=None, source_path=None, 
         "desired_backend": wanted_backend,
         "source_path": str(normalized_source or "").strip() or None,
     }
+    backup_path = str(previous_metadata.get("default_online_backup_path") or "").strip()
+    if backup_path:
+        payload["default_online_backup_path"] = backup_path
 
     shared_cache_path = _ensure_shared_cache_from_playable(
         text or cache_path,

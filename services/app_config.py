@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import json
+import locale
 from pathlib import Path
 
 
@@ -11,10 +12,42 @@ _DEFAULT_CONFIG = {
     "tts_api_provider": "gemini",
     "tts_api_key": "",
     "gemini_model": "gemini-2.5-flash",
-    "ui_language": "zh",
+    "ui_language": "",
     "update_manifest_url": "",
     "shared_cache_manifest_url": "",
 }
+
+
+def _detect_system_ui_language():
+    candidates = []
+    try:
+        default_locale = locale.getdefaultlocale()
+    except Exception:
+        default_locale = None
+    if isinstance(default_locale, (list, tuple)) and default_locale:
+        candidates.extend([item for item in default_locale if item])
+    try:
+        current_locale = locale.getlocale()
+    except Exception:
+        current_locale = None
+    if isinstance(current_locale, (list, tuple)) and current_locale:
+        candidates.extend([item for item in current_locale if item])
+    try:
+        windows_locale = locale.getlocale(locale.LC_CTYPE)
+    except Exception:
+        windows_locale = None
+    if isinstance(windows_locale, (list, tuple)) and windows_locale:
+        candidates.extend([item for item in windows_locale if item])
+
+    for item in candidates:
+        value = str(item or "").strip().lower()
+        if not value:
+            continue
+        if value.startswith("zh") or "chinese" in value:
+            return "zh"
+        if value.startswith("en") or "english" in value:
+            return "en"
+    return "en"
 
 
 def _normalize_tts_provider(provider):
@@ -123,6 +156,8 @@ def set_generation_model(model_name):
 
 def get_ui_language():
     language = str(load_config().get("ui_language") or _DEFAULT_CONFIG["ui_language"]).strip().lower()
+    if not language:
+        language = _detect_system_ui_language()
     return "en" if language == "en" else "zh"
 
 

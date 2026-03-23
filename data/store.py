@@ -44,6 +44,7 @@ def _default_dictation_entry() -> dict[str, Any]:
         "last_result": "",
         "last_seen": "",
         "note": "",
+        "phonetic": "",
     }
 
 
@@ -242,6 +243,7 @@ class DictationStatsRepository:
                 "last_result": _clean_token(entry.get("last_result")),
                 "last_seen": _clean_token(entry.get("last_seen")),
                 "note": _clean_token(entry.get("note")),
+                "phonetic": _clean_token(entry.get("phonetic")),
             }
         )
         return payload
@@ -265,7 +267,15 @@ class DictationStatsRepository:
         self.save(stats)
         return True
 
-    def save_result(self, word: str, user_input: str, correct: bool, wrong_type: str) -> None:
+    def save_result(
+        self,
+        word: str,
+        user_input: str,
+        correct: bool,
+        wrong_type: str,
+        note: str = "",
+        phonetic: str = "",
+    ) -> None:
         token = _clean_token(word)
         if not token:
             return
@@ -279,11 +289,22 @@ class DictationStatsRepository:
             entry["last_wrong_input"] = _clean_token(user_input)
             entry["last_wrong_type"] = wrong_type
             entry["last_result"] = "wrong"
+        if _clean_token(note):
+            entry["note"] = _clean_token(note)
+        if _clean_token(phonetic):
+            entry["phonetic"] = _clean_token(phonetic)
         entry["last_seen"] = _now_second_text()
         stats[token] = entry
         self.save(stats)
 
-    def add_wrong_word(self, word: str, user_input: str, wrong_type: str) -> bool:
+    def add_wrong_word(
+        self,
+        word: str,
+        user_input: str,
+        wrong_type: str,
+        note: str = "",
+        phonetic: str = "",
+    ) -> bool:
         token = _clean_token(word)
         if not token:
             return False
@@ -293,6 +314,10 @@ class DictationStatsRepository:
         entry["last_wrong_input"] = _clean_token(user_input)
         entry["last_wrong_type"] = wrong_type
         entry["last_result"] = "wrong"
+        if _clean_token(note):
+            entry["note"] = _clean_token(note)
+        if _clean_token(phonetic):
+            entry["phonetic"] = _clean_token(phonetic)
         entry["last_seen"] = _now_second_text()
         stats[token] = entry
         self.save(stats)
@@ -344,7 +369,7 @@ class DictationStatsRepository:
         merged = dict(target_entry)
         merged["wrong_count"] = int(target_entry.get("wrong_count", 0) or 0) + int(source_payload.get("wrong_count", 0) or 0)
         merged["correct_count"] = int(target_entry.get("correct_count", 0) or 0) + int(source_payload.get("correct_count", 0) or 0)
-        for field in ("last_wrong_input", "last_wrong_type", "last_result", "note"):
+        for field in ("last_wrong_input", "last_wrong_type", "last_result", "note", "phonetic"):
             merged[field] = _clean_token(source_payload.get(field)) or _clean_token(target_entry.get(field))
         merged["last_seen"] = _now_second_text()
         stats[new_token] = merged
@@ -551,9 +576,39 @@ class WordStore:
             return WRONG_TYPE_SIMILAR
         return base
 
+    def _get_note_for_word(self, word):
+        token = _clean_token(word)
+        if not token:
+            return ""
+        try:
+            index = self.words.index(token)
+        except ValueError:
+            return ""
+        if 0 <= index < len(self.notes):
+            return _clean_token(self.notes[index])
+        return ""
+
+    def _get_phonetic_for_word(self, word):
+        token = _clean_token(word)
+        if not token:
+            return ""
+        try:
+            from services.phonetics import get_cached_phonetics
+
+            return _clean_token(get_cached_phonetics([token]).get(token))
+        except Exception:
+            return ""
+
     def record_dictation_result(self, word, user_input, correct):
         wrong_type = "" if correct else self._analyze_spelling_error(word, user_input)
-        self.dictation_repo.save_result(word, user_input, bool(correct), wrong_type)
+        self.dictation_repo.save_result(
+            word,
+            user_input,
+            bool(correct),
+            wrong_type,
+            note=self._get_note_for_word(word),
+            phonetic=self._get_phonetic_for_word(word),
+        )
 
     def snapshot_dictation_word_stats(self, word):
         return self.dictation_repo.snapshot_entry(word)
@@ -596,4 +651,10 @@ class WordStore:
 
     def add_wrong_word(self, word, user_input=""):
         wrong_type = self._analyze_spelling_error(word, user_input) if user_input else WRONG_TYPE_MANUAL
-        return self.dictation_repo.add_wrong_word(word, user_input, wrong_type)
+        return self.dictation_repo.add_wrong_word(
+            word,
+            user_input,
+            wrong_type,
+            note=self._get_note_for_word(word),
+            phonetic=self._get_phonetic_for_word(word),
+        )

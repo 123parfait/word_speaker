@@ -54,36 +54,42 @@ def build_tools_tab(host):
         tools_wrap,
         text=host.tr("generate_sentence"),
         command=host.make_sentence_for_selected_word,
+        takefocus=False,
     )
     host.tools_sentence_btn.grid(row=1, column=0, padx=(0, 6), pady=(8, 4), sticky="ew")
     host.tools_find_btn = ttk.Button(
         tools_wrap,
         text=host.tr("find_corpus_sentences"),
         command=host.open_find_window,
+        takefocus=False,
     )
     host.tools_find_btn.grid(row=1, column=1, padx=(6, 0), pady=(8, 4), sticky="ew")
     host.tools_passage_btn = ttk.Button(
         tools_wrap,
         text=host.tr("generate_ielts_passage"),
         command=host.open_passage_window,
+        takefocus=False,
     )
     host.tools_passage_btn.grid(row=2, column=0, padx=(0, 6), pady=4, sticky="ew")
     host.tools_settings_btn = ttk.Button(
         tools_wrap,
         text=host.tr("voice_model_settings"),
         command=host.toggle_settings,
+        takefocus=False,
     )
     host.tools_settings_btn.grid(row=2, column=1, padx=(6, 0), pady=4, sticky="ew")
     host.tools_update_btn = ttk.Button(
         tools_wrap,
         text=host.tr("update_app"),
         command=host.open_update_dialog,
+        takefocus=False,
     )
     host.tools_update_btn.grid(row=3, column=0, padx=(0, 6), pady=(8, 4), sticky="ew")
     host.tools_sync_cache_btn = ttk.Button(
         tools_wrap,
         text=host.tr("sync_shared_cache"),
         command=host.sync_shared_cache_package_online,
+        takefocus=False,
     )
     host.tools_sync_cache_btn.grid(row=3, column=1, padx=(6, 0), pady=(8, 4), sticky="ew")
     ttk.Label(tools_wrap, text=host.tr("shared_cache_tools"), style="Card.TLabel").grid(
@@ -93,12 +99,14 @@ def build_tools_tab(host):
         tools_wrap,
         text=host.tr("export_shared_cache"),
         command=host.export_shared_cache_package,
+        takefocus=False,
     )
     host.tools_export_cache_btn.grid(row=5, column=0, padx=(0, 6), pady=(8, 4), sticky="ew")
     host.tools_import_cache_btn = ttk.Button(
         tools_wrap,
         text=host.tr("import_shared_cache"),
         command=host.import_shared_cache_package,
+        takefocus=False,
     )
     host.tools_import_cache_btn.grid(row=5, column=1, padx=(6, 0), pady=(8, 4), sticky="ew")
     next_row = 6
@@ -109,11 +117,13 @@ def build_tools_tab(host):
         tools_wrap,
         text=host.tr("export_resource_pack"),
         command=host.export_word_resource_pack_tool,
+        takefocus=False,
     )
     host.tools_export_resource_pack_btn.grid(row=next_row + 1, column=0, padx=(0, 6), pady=(8, 4), sticky="ew")
     host.tools_import_resource_pack_btn = ttk.Button(
         tools_wrap,
         text=host.tr("import_resource_pack"),
         command=host.import_word_resource_pack_tool,
+        takefocus=False,
     )
     host.tools_import_resource_pack_btn.grid(row=next_row + 1, column=1, padx=(6, 0), pady=(8, 4), sticky="ew")

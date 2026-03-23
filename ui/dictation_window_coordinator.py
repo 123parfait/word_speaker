@@ -14,6 +14,22 @@ from ui.dictation_panel import build_dictation_panel
 from ui.list_presenter import build_dictation_list_state
 
 
+def _center_window(win):
+    if not win or not win.winfo_exists():
+        return
+    try:
+        win.update_idletasks()
+        width = max(int(win.winfo_width() or 0), 1)
+        height = max(int(win.winfo_height() or 0), 1)
+        screen_w = max(1, int(win.winfo_screenwidth() or 1))
+        screen_h = max(1, int(win.winfo_screenheight() or 1))
+        x = max(0, (screen_w - width) // 2)
+        y = max(0, (screen_h - height) // 2)
+        win.geometry(f"+{x}+{y}")
+    except Exception:
+        pass
+
+
 def open_window(host):
     if host.dictation_window and host.dictation_window.winfo_exists():
         host.dictation_window.deiconify()
@@ -36,6 +52,7 @@ def open_window(host):
     build_dictation_panel(host, host.check_panel)
     refresh_recent_list(host)
     show_frame(host, host.dictation_setup_frame)
+    _center_window(host.dictation_window)
 
 
 def close_window(host):
@@ -113,7 +130,9 @@ def set_list_mode(host, mode, refresh=True):
             "meta",
             text=(host.tr("error_type") if target == "recent" else host.tr("notes")),
         )
-    host.dictation_status_var.set(host.tr("dictation_recent_hint") if target == "recent" else host.tr("dictation_all_hint"))
+    host.dictation_setup_status_var.set(
+        host.tr("dictation_recent_hint") if target == "recent" else host.tr("dictation_all_hint")
+    )
     if refresh:
         refresh_recent_list(host)
 
@@ -195,14 +214,80 @@ def open_mode_picker(host, auto_start=True):
         btn.grid(row=0, column=idx, padx=(0 if idx == 0 else 6, 0))
         host.dictation_order_buttons.append((value, btn))
 
-    ttk.Label(options_card, text=host.tr("feedback"), style="Card.TLabel").grid(row=4, column=0, sticky="w")
-    feedback_row = ttk.Frame(options_card, style="Card.TFrame")
-    feedback_row.grid(row=5, column=0, sticky="w", pady=(6, 0))
-    host.dictation_feedback_buttons = []
-    for idx, (value, text_key) in enumerate((("none", "no_live_feedback"), ("live", "live_feedback"))):
-        btn = ttk.Button(feedback_row, text=host.tr(text_key), command=lambda v=value: host.set_dictation_feedback(v))
-        btn.grid(row=0, column=idx, padx=(0 if idx == 0 else 6, 0))
-        host.dictation_feedback_buttons.append((value, btn))
+    feedback_head = ttk.Frame(options_card, style="Card.TFrame")
+    feedback_head.grid(row=4, column=0, sticky="ew", pady=(10, 0))
+    feedback_head.grid_columnconfigure(0, weight=1)
+    ttk.Label(feedback_head, text=host.tr("feedback"), style="Card.TLabel").grid(row=0, column=0, sticky="w")
+    tk.Checkbutton(
+        feedback_head,
+        text=host.tr("live_feedback"),
+        variable=host.dictation_live_feedback_var,
+        command=lambda: host.set_dictation_feedback(host.dictation_live_feedback_var.get()),
+        bg="#f6f7fb",
+        activebackground="#f6f7fb",
+        anchor="w",
+        relief="flat",
+        highlightthickness=0,
+        bd=0,
+        font=("Segoe UI", 11),
+    ).grid(row=0, column=1, sticky="e")
+
+    ttk.Label(options_card, text=host.tr("dictation_feedback_display"), style="Card.TLabel").grid(
+        row=5, column=0, sticky="w", pady=(8, 0)
+    )
+    display_row = ttk.Frame(options_card, style="Card.TFrame")
+    display_row.grid(row=6, column=0, sticky="w", pady=(6, 0))
+    tk.Checkbutton(
+        display_row,
+        text=host.tr("dictation_feedback_show_answer"),
+        variable=host.dictation_show_answer_var,
+        bg="#f6f7fb",
+        activebackground="#f6f7fb",
+        anchor="w",
+        relief="flat",
+        highlightthickness=0,
+        bd=0,
+        font=("Segoe UI", 11),
+    ).grid(
+        row=0, column=0, sticky="w"
+    )
+    tk.Checkbutton(
+        display_row,
+        text=host.tr("dictation_feedback_show_note"),
+        variable=host.dictation_show_note_var,
+        command=host.update_dictation_feedback_layout,
+        bg="#f6f7fb",
+        activebackground="#f6f7fb",
+        anchor="w",
+        relief="flat",
+        highlightthickness=0,
+        bd=0,
+        font=("Segoe UI", 11),
+    ).grid(
+        row=0, column=1, padx=(10, 0), sticky="w"
+    )
+    tk.Checkbutton(
+        display_row,
+        text=host.tr("dictation_feedback_show_phonetic"),
+        variable=host.dictation_show_phonetic_var,
+        bg="#f6f7fb",
+        activebackground="#f6f7fb",
+        anchor="w",
+        relief="flat",
+        highlightthickness=0,
+        bd=0,
+        font=("Segoe UI", 11),
+    ).grid(row=0, column=2, padx=(10, 0), sticky="w")
+
+    duration_row = ttk.Frame(options_card, style="Card.TFrame")
+    duration_row.grid(row=7, column=0, sticky="w", pady=(8, 0))
+    ttk.Label(duration_row, text=host.tr("dictation_feedback_duration"), style="Card.TLabel").grid(row=0, column=0, sticky="w")
+    ttk.Entry(duration_row, textvariable=host.dictation_feedback_seconds_var, width=6).grid(
+        row=0, column=1, padx=(8, 6), sticky="w"
+    )
+    ttk.Label(duration_row, text=host.tr("seconds_short"), style="Card.TLabel", foreground="#667085").grid(
+        row=0, column=2, sticky="w"
+    )
 
     host.dictation_mode_hint_label = ttk.Label(
         wrap,
@@ -212,7 +297,7 @@ def open_mode_picker(host, auto_start=True):
         wraplength=420,
         justify="left",
     )
-    host.dictation_mode_hint_label.grid(row=3, column=0, sticky="w", pady=(10, 0))
+    host.dictation_mode_hint_label.grid(row=3, column=0, sticky="w", pady=(12, 0))
 
     btn_row = ttk.Frame(wrap, style="Card.TFrame")
     btn_row.grid(row=4, column=0, sticky="ew", pady=(14, 0))
@@ -234,7 +319,8 @@ def open_mode_picker(host, auto_start=True):
     host.set_dictation_mode(host.dictation_mode_var.get())
     host.set_dictation_speed(host.dictation_speed_var.get())
     host.set_dictation_order(host.dictation_order_var.get())
-    host.set_dictation_feedback(host.dictation_feedback_var.get())
+    host.set_dictation_feedback(host.dictation_live_feedback_var.get())
+    host.update_dictation_feedback_layout()
 
 
 def close_mode_picker(host):
@@ -289,7 +375,7 @@ def start_from_selected_word(host):
         start_index = 0
     show_frame(host, host.dictation_session_frame)
     host.set_dictation_speed(host.dictation_speed_var.get())
-    host.set_dictation_feedback(host.dictation_feedback_var.get())
+    host.set_dictation_feedback(host.dictation_live_feedback_var.get())
     host.start_online_spelling_session(start_index=start_index)
 
 
@@ -331,7 +417,6 @@ def on_list_selected(host, _event=None):
     else:
         host._set_word_action_context(None, origin="dictation", word=selected_word)
     host._refresh_selection_details()
-    speak_preview(host, store_index=store_index)
 
 
 def on_list_click_play(host, event=None):
@@ -356,6 +441,33 @@ def on_list_click_play(host, event=None):
         word = str(items[view_index].get("word") or "").strip()
         if not word:
             return "break"
+    speak_preview(host, word=word, store_index=store_index)
+    return "break"
+
+
+def on_review_tree_click(host, event=None):
+    tree = getattr(event, "widget", None) if event is not None else None
+    if tree is None:
+        return "break"
+    row_id = str(tree.identify_row(event.y) or "").strip() if event is not None else ""
+    if not row_id or row_id == "empty":
+        return "break"
+    try:
+        item = tree.item(row_id)
+    except Exception:
+        return "break"
+    values = item.get("values") or ()
+    if not values:
+        return "break"
+    word_text = str(values[0] or "").splitlines()[0].strip()
+    word = re.sub(r"^\d+\.\s*", "", word_text, count=1).strip()
+    if not word:
+        return "break"
+    store_index = None
+    try:
+        store_index = host.store.words.index(word)
+    except Exception:
+        store_index = None
     speak_preview(host, word=word, store_index=store_index)
     return "break"
 
@@ -399,9 +511,17 @@ def set_speed(host, value):
 
 
 def set_feedback(host, value):
-    host.dictation_feedback_var.set(str(value))
-    for current, btn in getattr(host, "dictation_feedback_buttons", []):
-        btn.config(style="SelectedSpeed.TButton" if current == host.dictation_feedback_var.get() else "Speed.TButton")
+    enabled = bool(value) if not isinstance(value, str) else str(value).strip().lower() == "live"
+    host.dictation_live_feedback_var.set(enabled)
+    host.dictation_feedback_var.set("live" if enabled else "none")
+
+
+def update_feedback_layout(host):
+    frame = getattr(host, "dictation_session_frame", None)
+    if not frame:
+        return
+    reserve_two_lines = bool(getattr(host, "dictation_show_note_var", None) and host.dictation_show_note_var.get())
+    frame.grid_rowconfigure(3, minsize=68 if reserve_two_lines else 38)
 
 
 def seconds_for_speed(host):

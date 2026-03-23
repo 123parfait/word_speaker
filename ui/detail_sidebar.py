@@ -78,18 +78,3 @@ def build_review_tab(host):
         wraplength=360,
         justify="left",
     ).grid(row=3, column=0, sticky="w", pady=(0, 12))
-    review_actions = ttk.Frame(review_card, style="Card.TFrame")
-    review_actions.grid(row=4, column=0, sticky="ew")
-    review_actions.grid_columnconfigure(0, weight=1)
-    review_actions.grid_columnconfigure(1, weight=1)
-    host.review_open_source_btn = ttk.Button(
-        review_actions,
-        text=host.tr("open_history"),
-        command=host.toggle_history,
-    )
-    host.review_open_source_btn.grid(row=0, column=0, padx=(0, 6), sticky="ew")
-    ttk.Button(
-        review_actions,
-        text=host.tr("open_tools"),
-        command=lambda: host._select_sidebar_tab("tools"),
-    ).grid(row=0, column=1, padx=(6, 0), sticky="ew")

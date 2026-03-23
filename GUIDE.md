@@ -30,10 +30,17 @@
 - Dictation supports `Sequential` and `Random (No Repeat)` question order
 - The session-end summary now uses the same answer-review layout as the in-session `Answer Review` popup, including accuracy, previous accuracy, buttons, and the comparison table
 - Wrong answers are stored locally, sorted by mistake count, and shown in the recent wrong-word list with error causes
+- Recent-wrong cache entries now also keep the original note and phonetic, even if the current UI does not show both fields yet
 - In dictation, `Previous` now reopens the last word for editing and rolls back the previous attempt so the old answer does not count
 - Wrong answers in dictation stay visible briefly before the next word instead of disappearing immediately
 - Dictation includes a dedicated volume popup with boost up to `600%`
 - The dictation volume popup auto-closes when the user returns focus to the typing box
+- Dictation feedback settings are split into two layers:
+  - a live-feedback checkbox that controls whether spelling feedback happens during typing
+  - per-field display options for answer, note, phonetic, plus feedback duration in seconds
+- The feedback display options apply to the small feedback text below the answer box for both correct and wrong answers
+- After a wrong answer, the input box still fills with the correct word and stays highlighted; the `Show Answer` option only controls whether the lower feedback text includes an explicit answer line
+- The session-end review table and the answer-review popup both support click-to-play on reviewed words without auto-playing on open
 - The session-end result screen plays a short 3-second visual effect based on accuracy:
   - below `50%`: rainbow
   - `50% - 80%`: blooming flower
@@ -115,6 +122,7 @@
   - real backend source
   - desired backend target
   - linked shared/global cache path
+- For words temporarily overridden to `Piper`/`Kokoro`, cache metadata can also preserve an explicit `default_online_backup_path` so restoring the default backend can snap back to the older online audio
 - The online replacement queue is persisted in `data/audio_cache/pending_online_tts_replacements.json`
 - Queue throttling is conservative by provider:
   - ElevenLabs: dynamic throttling around a `1.5s` base interval, `45s` cooldown after rate-limit errors

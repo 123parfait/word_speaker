@@ -57,6 +57,24 @@ def _finish_after(host, duration_ms):
     _schedule(host, duration_ms, lambda: stop_result_effect(host))
 
 
+def _draw_message(canvas, *, width, y, title, subtitle="", title_color="#111827", subtitle_color="#475467", scale=1.0):
+    canvas.create_text(
+        width // 2,
+        y,
+        text=title,
+        fill=title_color,
+        font=("Segoe UI", max(16, int(26 * scale)), "bold"),
+    )
+    if subtitle:
+        canvas.create_text(
+            width // 2,
+            y + max(24, int(30 * scale)),
+            text=subtitle,
+            fill=subtitle_color,
+            font=("Segoe UI", max(10, int(12 * scale))),
+        )
+
+
 def _animate_rainbow(host, canvas):
     duration_ms = 3000
     colors = ["#ef4444", "#f97316", "#facc15", "#22c55e", "#38bdf8", "#6366f1", "#d946ef"]
@@ -93,6 +111,16 @@ def _animate_rainbow(host, canvas):
             canvas.create_oval(x - 6, y - 22, x + 42, y + 18, fill=cloud_fill, outline="")
             canvas.create_oval(x + 20, y - 16, x + 58, y + 16, fill=cloud_fill, outline="")
             canvas.create_rectangle(x - 14, y, x + 36, y + 18, fill=cloud_fill, outline="")
+        _draw_message(
+            canvas,
+            width=width,
+            y=40,
+            title="Keep Going!",
+            subtitle="This round was rough, but the next one can be better.",
+            title_color="#7c2d12",
+            subtitle_color="#9a3412",
+            scale=0.9 + progress * 0.1,
+        )
         if progress < 1.0:
             _schedule(host, 60, lambda: _step(frame_idx + 1))
 
@@ -132,6 +160,16 @@ def _animate_flower(host, canvas):
                 outline="",
             )
         canvas.create_oval(center_x - 22, center_y - 22, center_x + 22, center_y + 22, fill="#facc15", outline="")
+        _draw_message(
+            canvas,
+            width=width,
+            y=34,
+            title="Nice Bloom!",
+            subtitle="A solid round. You are clearly improving.",
+            title_color="#7e22ce",
+            subtitle_color="#6d28d9",
+            scale=0.85 + progress * 0.2,
+        )
         if progress < 1.0:
             _schedule(host, 60, lambda: _step(frame_idx + 1))
 
@@ -201,6 +239,17 @@ def _animate_fireworks(host, canvas):
                 continue
             size = piece["size"]
             canvas.create_rectangle(x, y, x + size, y + size * 0.55, fill=piece["color"], outline="")
+        pulse = 1.0 + abs(math.sin(frame_idx / 3.8)) * 0.15
+        _draw_message(
+            canvas,
+            width=width,
+            y=34,
+            title="Excellent!",
+            subtitle="Fireworks unlocked. That was a strong run.",
+            title_color="#be123c",
+            subtitle_color="#7c3aed",
+            scale=pulse,
+        )
         if frame_idx < 50:
             _schedule(host, 60, lambda: _step(frame_idx + 1))
 

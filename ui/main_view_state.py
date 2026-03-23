@@ -90,6 +90,9 @@ class MainViewState:
     translations: dict = field(default_factory=dict)
     word_pos: dict = field(default_factory=dict)
     word_phonetics: dict = field(default_factory=dict)
+    word_metadata_event_queue: Any = field(default_factory=_queue.Queue)
+    word_metadata_event_after: Any = None
+    word_metadata_active_tasks: int = 0
     pending_translation_words: set = field(default_factory=set)
     pending_analysis_words: set = field(default_factory=set)
     pending_phonetic_words: set = field(default_factory=set)
@@ -153,8 +156,14 @@ class MainViewState:
     audio_precache_token: int = 0
     dictation_mode_var: Any = None
     dictation_feedback_var: Any = None
+    dictation_live_feedback_var: Any = None
+    dictation_show_answer_var: Any = None
+    dictation_show_note_var: Any = None
+    dictation_show_phonetic_var: Any = None
+    dictation_feedback_seconds_var: Any = None
     dictation_speed_var: Any = None
     dictation_order_var: Any = None
+    dictation_setup_status_var: Any = None
     dictation_status_var: Any = None
     dictation_timer_var: Any = None
     dictation_progress_var: Any = None
@@ -273,8 +282,14 @@ class MainViewState:
             find_status_var=tk.StringVar(value="Import docs, then search by word or phrase."),
             dictation_mode_var=tk.StringVar(value="online_spelling"),
             dictation_feedback_var=tk.StringVar(value="live"),
+            dictation_live_feedback_var=tk.BooleanVar(value=True),
+            dictation_show_answer_var=tk.BooleanVar(value=True),
+            dictation_show_note_var=tk.BooleanVar(value=True),
+            dictation_show_phonetic_var=tk.BooleanVar(value=False),
+            dictation_feedback_seconds_var=tk.StringVar(value="2.2"),
             dictation_speed_var=tk.StringVar(value="1.0"),
             dictation_order_var=tk.StringVar(value="order"),
+            dictation_setup_status_var=tk.StringVar(value="Recent mistake list"),
             dictation_status_var=tk.StringVar(value="Recent mistake list"),
             dictation_timer_var=tk.StringVar(value="5s"),
             dictation_progress_var=tk.StringVar(value="Spelling (0/0)"),

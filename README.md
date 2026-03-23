@@ -18,6 +18,11 @@ The project is currently migrating from `Tkinter` to `PySide6`. The default laun
 - Practice dictation with wrong-word review
 - Dictation now supports both sequential order and random no-repeat order
 - Dictation no longer auto-removes a word from `Recent Wrong` just because the user answered it correctly once
+- Dictation feedback is now configurable in two layers:
+  - enable/disable live spelling feedback
+  - choose whether the feedback text shows answer, note, phonetic, and how long the feedback stays visible
+- After a wrong answer, the input box still fills with the correct word while the small feedback text below the box follows the display settings
+- Dictation result tables now support click-to-play for reviewed words
 - Dictation result screen now plays a short 3-second celebration effect:
   - `< 50%`: rainbow
   - `50% - 80%`: blooming flower
@@ -31,6 +36,7 @@ The project is currently migrating from `Tkinter` to `PySide6`. The default laun
   - Chinese translations
   - part-of-speech labels
   - phonetics
+- Recent-wrong cache entries now also preserve note and phonetic data for later review
 - Sync the official library bundle from the app:
   - shared audio cache
   - shared translation / POS / phonetic metadata
@@ -90,6 +96,7 @@ Current metadata behavior:
 - English -> Chinese translation prefers local `Argos Translate` and falls back to `Gemini`
 - UK phonetics are generated through `Gemini` and cached locally
 - part-of-speech, translation, and phonetics are refreshed together and can be distributed through shared-cache packages
+- When a word is switched to `Piper`, the app now preserves an explicit default online backup path in cache metadata so `Restore Default Audio` can return to the earlier online audio more reliably
 
 Windows packaging is also supported. The packaged app includes local models and WordNet data so end users do not need to download extra runtime assets separately.
 

@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from dataclasses import dataclass
 
+from services.phonetics import get_cached_phonetics
 from services.translation import get_cached_translations
 from services.word_analysis import get_cached_pos
 
@@ -36,17 +37,33 @@ def _resolve_translation(word, translations):
         return ""
 
 
-def format_word_subline(word, *, word_pos, translations):
+def _resolve_phonetic(word, phonetics):
+    phonetic_text = str((phonetics or {}).get(word) or "").strip()
+    if phonetic_text:
+        return phonetic_text
+    try:
+        return str(get_cached_phonetics([word]).get(word) or "").strip()
+    except Exception:
+        return ""
+
+
+def format_word_subline(word, *, word_pos, translations, phonetics=None):
     pos_label = _resolve_word_pos(word, word_pos)
     zh_text = _resolve_translation(word, translations)
-    parts = [part for part in (pos_label, zh_text) if part]
+    phonetic_text = _resolve_phonetic(word, phonetics)
+    translation_display = zh_text
+    if zh_text and phonetic_text:
+        translation_display = f"{zh_text}  {phonetic_text}"
+    elif phonetic_text:
+        translation_display = phonetic_text
+    parts = [part for part in (pos_label, translation_display) if part]
     if parts:
         return " ".join(parts)
     return "..."
 
 
-def build_word_table_values(idx, word, *, note, word_pos, translations):
-    display_text = f"{word}\n{format_word_subline(word, word_pos=word_pos, translations=translations)}"
+def build_word_table_values(idx, word, *, note, word_pos, translations, phonetics=None):
+    display_text = f"{word}\n{format_word_subline(word, word_pos=word_pos, translations=translations, phonetics=phonetics)}"
     return (f"{idx + 1}.", display_text, note or "")
 
 

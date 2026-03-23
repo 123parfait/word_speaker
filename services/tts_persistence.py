@@ -101,11 +101,18 @@ class CacheMetadataStore:
             linked_shared = str(payload.get("linked_shared_path") or "").strip()
             if linked_shared:
                 payload["linked_shared_path"] = self._canonicalize(linked_shared, metadata=payload)
+            default_online_backup = str(payload.get("default_online_backup_path") or "").strip()
+            if default_online_backup:
+                payload["default_online_backup_path"] = self._canonicalize(
+                    default_online_backup,
+                    metadata=payload,
+                )
             payload["cache_path"] = canonical_path
             if (
                 original_cache_path != canonical_path
                 or payload.get("source_path") != data.get("source_path")
                 or payload.get("linked_shared_path") != data.get("linked_shared_path")
+                or payload.get("default_online_backup_path") != data.get("default_online_backup_path")
             ):
                 write_json_file(cache_meta_path(canonical_path), payload)
         with self._lock:

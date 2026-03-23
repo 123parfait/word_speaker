@@ -120,6 +120,7 @@ from ui.dictation_window_coordinator import (
     get_preview_source_path as get_dictation_preview_source_path_flow,
     get_source_items as get_dictation_source_items_flow,
     on_list_click_play as on_dictation_list_click_play_flow,
+    on_review_tree_click as on_dictation_review_tree_click_flow,
     on_list_selected as on_dictation_list_selected_flow,
     open_mode_picker as open_dictation_mode_picker_flow,
     open_window as open_dictation_window_flow,
@@ -538,6 +539,12 @@ UI_TEXTS = {
         "dictation_order_sequential": "顺序",
         "dictation_order_random": "乱序不重复",
         "feedback": "反馈",
+        "dictation_feedback_display": "答错后显示",
+        "dictation_feedback_show_answer": "显示答案",
+        "dictation_feedback_show_note": "显示备注",
+        "dictation_feedback_show_phonetic": "显示音标",
+        "dictation_feedback_duration": "反馈时间",
+        "seconds_short": "s",
         "next_word": "下个单词",
         "pause": "暂停",
         "replay": "重播",
@@ -671,7 +678,11 @@ UI_TEXTS = {
         "dictation_keep_spelling": "继续拼写……",
         "dictation_wrong_live": "拼写中反馈：错误",
         "dictation_correct": "正确",
+        "dictation_wrong_plain": "错误。",
         "dictation_wrong_answer": "错误。答案：{word}",
+        "dictation_wrong_answer_line": "答案：{word}",
+        "dictation_feedback_note": "备注：{note}",
+        "dictation_feedback_phonetic": "音标：{phonetic}",
         "dictation_listen_type": "请听音并拼写单词。",
         "dictation_session_complete": "本轮结束。",
         "dictation_recent_title": "近期错词列表",
@@ -880,6 +891,12 @@ UI_TEXTS = {
         "dictation_order_sequential": "Sequential",
         "dictation_order_random": "Random (No Repeat)",
         "feedback": "Feedback",
+        "dictation_feedback_display": "Show after a wrong answer",
+        "dictation_feedback_show_answer": "Show Answer",
+        "dictation_feedback_show_note": "Show Note",
+        "dictation_feedback_show_phonetic": "Show Phonetic",
+        "dictation_feedback_duration": "Feedback Time",
+        "seconds_short": "s",
         "next_word": "Next Word",
         "pause": "Pause",
         "replay": "Replay",
@@ -1013,7 +1030,11 @@ UI_TEXTS = {
         "dictation_keep_spelling": "Keep spelling...",
         "dictation_wrong_live": "Typing feedback: wrong",
         "dictation_correct": "Correct",
+        "dictation_wrong_plain": "Wrong.",
         "dictation_wrong_answer": "Wrong. Answer: {word}",
+        "dictation_wrong_answer_line": "Answer: {word}",
+        "dictation_feedback_note": "Note: {note}",
+        "dictation_feedback_phonetic": "Phonetic: {phonetic}",
         "dictation_listen_type": "Listen and type the word.",
         "dictation_session_complete": "Session complete.",
         "dictation_recent_title": "Recent mistake list",
@@ -1141,6 +1162,8 @@ class MainView(ttk.Frame):
             "TCombobox",
             "Combobox",
             "Listbox",
+            "Button",
+            "TButton",
         }
         try:
             widget_class = str(widget.winfo_class() or "")
@@ -1408,6 +1431,7 @@ class MainView(ttk.Frame):
             note=note_value,
             word_pos=self.word_pos,
             translations=self.translations,
+            phonetics=self.word_phonetics,
         )
 
     def _start_analysis_job(self, words, token):
@@ -1520,6 +1544,9 @@ class MainView(ttk.Frame):
     def on_dictation_list_click_play(self, event=None):
         return on_dictation_list_click_play_flow(self, event=event)
 
+    def on_dictation_review_tree_click(self, event=None):
+        return on_dictation_review_tree_click_flow(self, event=event)
+
     def _speak_dictation_preview(self, word=None, store_index=None):
         speak_dictation_preview_flow(self, word=word, store_index=store_index)
 
@@ -1531,6 +1558,11 @@ class MainView(ttk.Frame):
 
     def set_dictation_feedback(self, value):
         set_dictation_feedback_flow(self, value)
+
+    def update_dictation_feedback_layout(self):
+        from ui.dictation_window_coordinator import update_feedback_layout as update_dictation_feedback_layout_flow
+
+        update_dictation_feedback_layout_flow(self)
 
     def _dictation_seconds_for_speed(self):
         return dictation_seconds_for_speed_flow(self)

@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+import queue
+
 from services.phonetics import get_cached_phonetics
 from services.translation import get_cached_translations
 from services.word_analysis import get_cached_pos
@@ -18,16 +20,27 @@ from ui.word_metadata_presenter import (
 from ui.word_table_helper import refresh_word_table_rows
 
 
+def _ensure_metadata_event_poll(host):
+    if host.word_metadata_event_after:
+        return
+    host.word_metadata_event_after = host.after(50, lambda: poll_metadata_events(host))
+
+
+def _start_metadata_task(host):
+    host.word_metadata_active_tasks += 1
+    _ensure_metadata_event_poll(host)
+
+
 def start_analysis_job(host, words, token):
     requested_words = normalize_requested_words(words)
     if not requested_words:
         return
     host.pending_analysis_words.update(requested_words)
+    _start_metadata_task(host)
     start_analysis_task(
         requested_words=requested_words,
         token=token,
-        after=host.after,
-        on_complete=host._apply_pos_analysis,
+        target_queue=host.word_metadata_event_queue,
     )
 
 
@@ -36,11 +49,11 @@ def start_translation_job(host, words, token):
     if not requested_words:
         return
     host.pending_translation_words.update(requested_words)
+    _start_metadata_task(host)
     start_translation_task(
         requested_words=requested_words,
         token=token,
-        after=host.after,
-        on_complete=host._apply_translations,
+        target_queue=host.word_metadata_event_queue,
     )
 
 
@@ -49,34 +62,69 @@ def start_phonetic_job(host, words, token):
     if not requested_words:
         return
     host.pending_phonetic_words.update(requested_words)
+    _start_metadata_task(host)
     start_phonetic_task(
         requested_words=requested_words,
         token=token,
-        after=host.after,
-        on_complete=host._apply_phonetics,
+        target_queue=host.word_metadata_event_queue,
     )
 
 
 def start_single_translation(host, row_idx, word):
     token = host.translation_token
+    _start_metadata_task(host)
     start_single_translation_task(
         word=word,
         row_idx=row_idx,
         token=token,
-        after=host.after,
-        on_complete=host._apply_single_translation,
+        target_queue=host.word_metadata_event_queue,
     )
 
 
 def start_single_phonetic(host, row_idx, word):
     token = host.phonetic_token
+    _start_metadata_task(host)
     start_single_phonetic_task(
         word=word,
         row_idx=row_idx,
         token=token,
-        after=host.after,
-        on_complete=host._apply_single_phonetic,
+        target_queue=host.word_metadata_event_queue,
     )
+
+
+def poll_metadata_events(host):
+    host.word_metadata_event_after = None
+    processed = False
+    try:
+        while True:
+            event_type, token, payload = host.word_metadata_event_queue.get_nowait()
+            processed = True
+            host.word_metadata_active_tasks = max(0, host.word_metadata_active_tasks - 1)
+            payload = payload or {}
+            if event_type == "analysis_done":
+                host._apply_pos_analysis(token, payload.get("requested_words"), payload.get("analyzed") or {})
+            elif event_type == "translation_done":
+                host._apply_translations(token, payload.get("requested_words"), payload.get("translated") or {})
+            elif event_type == "phonetic_done":
+                host._apply_phonetics(token, payload.get("requested_words"), payload.get("phonetics") or {})
+            elif event_type == "single_translation_done":
+                host._apply_single_translation(
+                    token,
+                    payload.get("row_idx"),
+                    payload.get("word"),
+                    payload.get("zh_text") or "",
+                )
+            elif event_type == "single_phonetic_done":
+                host._apply_single_phonetic(
+                    token,
+                    payload.get("row_idx"),
+                    payload.get("word"),
+                    payload.get("phonetic_text") or "",
+                )
+    except queue.Empty:
+        pass
+    if host.word_metadata_active_tasks > 0 or (processed and not host.word_metadata_event_queue.empty()):
+        _ensure_metadata_event_poll(host)
 
 
 def apply_pos_analysis(host, token, requested_words, analyzed):

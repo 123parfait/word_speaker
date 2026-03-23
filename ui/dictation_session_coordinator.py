@@ -2,6 +2,7 @@
 import re
 import unicodedata
 
+from services.phonetics import get_cached_phonetics
 from services.tts import cancel_all as tts_cancel_all, speak_async
 
 
@@ -14,6 +15,65 @@ def normalize_compare_text(text):
     raw = re.sub(r"\s+", " ", raw).strip()
     compact = re.sub(r"[^0-9a-z ]+", "", raw)
     return re.sub(r"\s+", " ", compact).strip()
+
+
+def _feedback_delay_ms(host):
+    try:
+        seconds = float(str(host.dictation_feedback_seconds_var.get() or "").strip())
+    except Exception:
+        seconds = 2.2
+    seconds = max(0.5, min(10.0, seconds))
+    normalized = f"{seconds:.1f}".rstrip("0").rstrip(".")
+    try:
+        if str(host.dictation_feedback_seconds_var.get() or "").strip() != normalized:
+            host.dictation_feedback_seconds_var.set(normalized)
+    except Exception:
+        pass
+    return int(seconds * 1000)
+
+
+def _dictation_note_for_word(host, word):
+    token = str(word or "").strip()
+    if not token:
+        return ""
+    try:
+        idx = host.store.words.index(token)
+    except ValueError:
+        idx = -1
+    if 0 <= idx < len(host.store.notes):
+        return str(host.store.notes[idx] or "").strip()
+    return str(host.store.get_dictation_word_stats(token).get("note") or "").strip()
+
+
+def _dictation_phonetic_for_word(host, word):
+    token = str(word or "").strip()
+    if not token:
+        return ""
+    return str(host.word_phonetics.get(token) or get_cached_phonetics([token]).get(token) or "").strip()
+
+
+def _feedback_message(host, word, status_key):
+    token = str(word or "").strip()
+    lines = [host.tr(status_key)]
+    if host.dictation_show_answer_var.get():
+        lines.append(host.trf("dictation_wrong_answer_line", word=token))
+    if host.dictation_show_note_var.get():
+        note = _dictation_note_for_word(host, token)
+        if note:
+            lines.append(host.trf("dictation_feedback_note", note=note))
+    if host.dictation_show_phonetic_var.get():
+        phonetic = _dictation_phonetic_for_word(host, token)
+        if phonetic:
+            lines.append(host.trf("dictation_feedback_phonetic", phonetic=phonetic))
+    return "\n".join(line for line in lines if str(line or "").strip())
+
+
+def _wrong_feedback_message(host, word):
+    return _feedback_message(host, word, "dictation_wrong_plain")
+
+
+def _correct_feedback_message(host, word):
+    return _feedback_message(host, word, "dictation_correct")
 
 
 def start_session(host, start_index=0):
@@ -187,6 +247,8 @@ def on_input_change(host):
 def finalize_attempt(host, trigger="manual"):
     if not host.dictation_running or host.dictation_answer_revealed or not host.dictation_current_word:
         return
+    host._cancel_dictation_play_start()
+    tts_cancel_all()
     host._cancel_dictation_timer()
     host.dictation_answer_revealed = True
     user_text = str(host.dictation_input.get() or "").strip() if host.dictation_input else ""
@@ -195,7 +257,7 @@ def finalize_attempt(host, trigger="manual"):
     if is_correct:
         host.dictation_correct_count += 1
         host._set_dictation_input_color("correct")
-        host.dictation_status_var.set(host.tr("dictation_correct"))
+        host.dictation_status_var.set(_correct_feedback_message(host, target))
     else:
         if host.dictation_input and host.dictation_input.winfo_exists():
             try:
@@ -205,8 +267,8 @@ def finalize_attempt(host, trigger="manual"):
                 host.dictation_input.icursor("end")
             except Exception:
                 pass
-        host._set_dictation_input_color("wrong")
-        host.dictation_status_var.set(host.trf("dictation_wrong_answer", word=target))
+        host._set_dictation_input_color("correct")
+        host.dictation_status_var.set(_wrong_feedback_message(host, target))
     if host.dictation_session_frame and host.dictation_session_frame.winfo_exists():
         try:
             host.dictation_session_frame.update_idletasks()
@@ -237,7 +299,7 @@ def finalize_attempt(host, trigger="manual"):
     host._refresh_dictation_answer_review_popup()
 
     if not is_correct:
-        delay = 2200
+        delay = _feedback_delay_ms(host)
     elif trigger == "input":
         delay = 1150
     else:
@@ -319,7 +381,7 @@ def reset_view(host):
     host.update_dictation_play_button()
     host.dictation_progress_var.set(state.progress_text)
     host.dictation_timer_var.set(state.timer_text)
-    host.dictation_status_var.set(host.tr("dictation_recent_title"))
+    host.dictation_setup_status_var.set(host.tr("dictation_recent_title"))
     host.dictation_progress["value"] = 0
     if host.dictation_input:
         host.dictation_input.delete(0, "end")
