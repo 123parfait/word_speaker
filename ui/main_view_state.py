@@ -128,6 +128,10 @@ class MainViewState:
     gemini_validation_token: int = 0
     gemini_validation_active_token: int = 0
     gemini_validation_queue: Any = field(default_factory=_queue.Queue)
+    update_task_token: int = 0
+    update_task_active_token: int = 0
+    update_task_queue: Any = field(default_factory=_queue.Queue)
+    update_task_after: Any = None
     current_passage: str = ""
     current_passage_original: str = ""
     current_passage_words: list = field(default_factory=list)

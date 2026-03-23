@@ -5,6 +5,7 @@ import os
 import queue
 import random
 import re
+import threading
 import time
 import tkinter as tk
 from html.parser import HTMLParser
@@ -2454,6 +2455,85 @@ class MainView(ttk.Frame):
             return
         self._install_update_package(path, confirm=True)
 
+    def _clear_update_task_queue(self):
+        clear_event_queue(self.update_task_queue)
+
+    def _emit_update_task_event(self, event_type, token, payload=None):
+        emit_event(self.update_task_queue, event_type, token, payload)
+
+    def _poll_update_task_events(self, token):
+        self.update_task_after = None
+        if token != self.update_task_active_token:
+            return
+        try:
+            while True:
+                event_type, event_token, payload = self.update_task_queue.get_nowait()
+                if event_token != token:
+                    continue
+                payload = payload or {}
+                if event_type == "manifest_ready":
+                    current_version = str(payload.get("current_version") or "0.0.0").strip() or "0.0.0"
+                    target_version = str(payload.get("target_version") or "0.0.0").strip() or "0.0.0"
+                    manifest = payload.get("manifest") or {}
+                    if not is_newer_version(target_version, current_version):
+                        self.status_var.set(self.tr("update_no_update"))
+                        messagebox.showinfo(self.tr("update_title"), self.tr("update_no_update"))
+                        return
+                    if not messagebox.askyesno(
+                        self.tr("update_title"),
+                        self.trf("update_online_available", version=target_version),
+                    ):
+                        self.status_var.set(self.tr("update_no_update"))
+                        return
+                    self.status_var.set(self.tr("update_downloading"))
+                    self._start_update_download_task(token, manifest.get("package_url"))
+                elif event_type == "download_ready":
+                    package_path = str(payload.get("package_path") or "").strip()
+                    if not package_path:
+                        messagebox.showerror(self.tr("update_title"), self.trf("update_failed", error="Missing package path."))
+                        return
+                    self._install_update_package(package_path, confirm=False)
+                    return
+                elif event_type == "error":
+                    self.status_var.set(self.tr("update_title"))
+                    messagebox.showerror(
+                        self.tr("update_title"),
+                        self.trf("update_failed", error=str(payload.get("error") or "Unknown error")),
+                    )
+                    return
+        except queue.Empty:
+            pass
+        if token == self.update_task_active_token:
+            self.update_task_after = self.after(80, lambda t=token: self._poll_update_task_events(t))
+
+    def _start_update_manifest_task(self, token, manifest_url, current_version):
+        def _run():
+            try:
+                manifest = fetch_online_manifest(manifest_url)
+                self._emit_update_task_event(
+                    "manifest_ready",
+                    token,
+                    {
+                        "manifest": manifest,
+                        "current_version": current_version,
+                        "target_version": str(manifest.get("version") or "0.0.0").strip() or "0.0.0",
+                    },
+                )
+            except Exception as exc:
+                self._emit_update_task_event("error", token, {"error": str(exc)})
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _start_update_download_task(self, token, package_url):
+        def _run():
+            try:
+                package_path = download_update_package(package_url)
+                self._emit_update_task_event("download_ready", token, {"package_path": package_path})
+            except Exception as exc:
+                self._emit_update_task_event("error", token, {"error": str(exc)})
+
+        threading.Thread(target=_run, daemon=True).start()
+
     def start_online_update(self):
         if not is_packaged_runtime():
             messagebox.showinfo(self.tr("update_title"), self.tr("update_not_packaged"))
@@ -2465,29 +2545,19 @@ class MainView(ttk.Frame):
             return
         set_update_manifest_url(manifest_url)
         self.status_var.set(self.tr("update_checking"))
-        try:
-            manifest = fetch_online_manifest(manifest_url)
-        except Exception as exc:
-            messagebox.showerror(self.tr("update_title"), self.trf("update_failed", error=str(exc)))
-            return
+        self.update_task_token += 1
+        token = self.update_task_token
+        self.update_task_active_token = token
+        self._clear_update_task_queue()
+        if self.update_task_after:
+            try:
+                self.after_cancel(self.update_task_after)
+            except Exception:
+                pass
+            self.update_task_after = None
         current_version = str(current_info.get("version") or "0.0.0").strip() or "0.0.0"
-        target_version = str(manifest.get("version") or "0.0.0").strip() or "0.0.0"
-        if not is_newer_version(target_version, current_version):
-            self.status_var.set(self.tr("update_no_update"))
-            messagebox.showinfo(self.tr("update_title"), self.tr("update_no_update"))
-            return
-        if not messagebox.askyesno(
-            self.tr("update_title"),
-            self.trf("update_online_available", version=target_version),
-        ):
-            return
-        self.status_var.set(self.tr("update_downloading"))
-        try:
-            package_path = download_update_package(manifest.get("package_url"))
-        except Exception as exc:
-            messagebox.showerror(self.tr("update_title"), self.trf("update_failed", error=str(exc)))
-            return
-        self._install_update_package(package_path, confirm=False)
+        self._start_update_manifest_task(token, manifest_url, current_version)
+        self.update_task_after = self.after(80, lambda t=token: self._poll_update_task_events(t))
 
     def open_update_dialog(self):
         current_info = load_local_version_info()

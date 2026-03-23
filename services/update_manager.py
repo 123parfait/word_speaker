@@ -332,6 +332,13 @@ def launch_staged_update(source_dir, *, entry_exe=None):
     status_path = install_dir / "data" / "update_status.txt"
     error_path = install_dir / "data" / "update_error.log"
 
+    # Clear stale updater markers so startup checks reflect the current attempt.
+    for marker_path in (status_path, error_path):
+        try:
+            marker_path.unlink()
+        except Exception:
+            pass
+
     protected_prefixes = ", ".join(_ps_quote(item) for item in PROTECTED_UPDATE_PREFIXES)
     protected_files = ", ".join(_ps_quote(item) for item in PROTECTED_UPDATE_FILES)
     script = f"""$ErrorActionPreference = 'Stop'
@@ -494,10 +501,8 @@ try {{
     creation_flags = 0
     if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
         creation_flags |= subprocess.CREATE_NEW_PROCESS_GROUP
-    if hasattr(subprocess, "DETACHED_PROCESS"):
-        creation_flags |= subprocess.DETACHED_PROCESS
 
-    subprocess.Popen(
+    proc = subprocess.Popen(
         [
             "powershell.exe",
             "-ExecutionPolicy",
@@ -505,9 +510,32 @@ try {{
             "-File",
             str(script_path),
         ],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
         close_fds=True,
         creationflags=creation_flags,
     )
+
+    # Guard against silent startup failures: if PowerShell exits immediately,
+    # surface the captured error to the caller so UI can show a clear message.
+    time.sleep(0.6)
+    if proc.poll() is not None:
+        stderr_text = ""
+        try:
+            stderr_text = (proc.stderr.read() or "").strip() if proc.stderr else ""
+        except Exception:
+            stderr_text = ""
+        if not stderr_text and error_path.exists():
+            try:
+                stderr_text = error_path.read_text(encoding="utf-8", errors="ignore").strip()
+            except Exception:
+                stderr_text = ""
+        if stderr_text:
+            raise RuntimeError(f"Updater failed to start: {stderr_text}")
+        raise RuntimeError("Updater failed to start. See data/update_error.log for details.")
+
     return {
         "script_path": str(script_path),
         "source_dir": str(source_root),
